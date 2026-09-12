@@ -13,11 +13,14 @@ from dotenv import load_dotenv
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 
-DEVNET_RPC = "https://api.devnet.solana.com"
-DEVNET_GENESIS = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
-DEVNET_NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
-DEVNET_USDC = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-FACILITATOR = "https://x402.org/facilitator"
+from governor.networks import (
+    DEVNET_GENESIS,
+    DEVNET_NETWORK,
+    DEVNET_RPC,
+    DEVNET_USDC,
+    FACILITATOR,
+)
+
 WALLET_PATH = Path(".governor/wallets/solana-devnet.json")
 
 

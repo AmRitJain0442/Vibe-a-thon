@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from governor.config import atomic
 from governor.ledger import Ledger, LedgerError, Reservation
+from governor.networks import DEVNET_NETWORK
 
 
 class Service(BaseModel):
@@ -24,7 +25,7 @@ class Quote(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
     service_id: str
     amount: str
-    network: Literal["eip155:84532"] = "eip155:84532"
+    network: Literal["solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"] = DEVNET_NETWORK
     mode: Literal["mock"] = "mock"
 
     @field_validator("amount")

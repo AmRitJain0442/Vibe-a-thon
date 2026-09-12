@@ -5,6 +5,7 @@ import pytest
 from governor.config import BudgetPolicy
 from governor.ledger import Ledger
 from governor.mock import MockPaymentAdapter
+from governor.networks import DEVNET_NETWORK
 from governor.payments import PaymentGate, Quote
 
 
@@ -70,6 +71,13 @@ async def test_invalid_challenge_never_reaches_authorizer(gate):
     result = await gate.purchase("summary", "Example.")
     assert result["code"] == "INVALID_CHALLENGE"
     assert gate.adapter.authorization_count == 0
+
+
+def test_quotes_only_accept_solana_devnet():
+    assert Quote(service_id="summary", amount="2000").network == DEVNET_NETWORK
+    for network in ("eip155:84532", "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"):
+        with pytest.raises(ValueError):
+            Quote(service_id="summary", amount="2000", network=network)
 
 
 async def test_cancellation_after_authorization_keeps_hold(gate):
