@@ -270,3 +270,24 @@ def test_invalid_selected_limits_do_not_create_budget(dashboard, limits):
     app, client = dashboard
     assert create(client, limits=limits).status_code == 400
     assert app.ledger.sessions() == []
+
+
+def test_selected_tool_timeout_preserves_existing_holds(dashboard, monkeypatch):
+    import asyncio
+
+    app, client = dashboard
+    assert create(client, limits={"tool_timeout_seconds": 1}).status_code == 202
+    app.ledger.reserve("codex-test", "existing", "summary", "500")
+
+    class SlowRegistry:
+        schemas = {"get_budget": {}}
+
+        async def execute(self, *args):
+            await asyncio.sleep(10)
+            return {"ok": True}
+
+    monkeypatch.setattr(app.plugin, "registry", lambda *args: SlowRegistry())
+    result = call(client, "slow", "get_budget").json()
+    assert result == {"ok": False, "code": "TOOL_ERROR", "holds_preserved": True}
+    assert app.ledger.snapshot("codex-test")["held"] == "500"
+    assert app.active is None

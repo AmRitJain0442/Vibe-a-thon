@@ -289,3 +289,32 @@ async def test_settings_apply_to_next_turn_and_lock_budget_after_creation(tmp_pa
         turns = [params for method, params in app.transport.calls if method == "turn/start"]
         assert turns[-1]["model"] == "second-model"
         assert len([path for path, _ in app.client.requests if path == "/api/plugin/runs"]) == 1
+
+
+async def test_settings_reject_over_cap_and_cancel_without_changes(tmp_path):
+    from textual.widgets import Input
+
+    from governor.terminal_settings import TerminalSettings
+
+    app = terminal(tmp_path)
+    app.client.request = lambda *args: {
+        "plugin_api": 1,
+        "policy": {
+            "session_cap": "10000",
+            "per_call_cap": "3000",
+            "max_tool_calls": 16,
+            "run_timeout_seconds": 120,
+        },
+    }
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.press("f2")
+        await until(pilot, lambda: isinstance(app.screen, TerminalSettings))
+        app.screen.query_one("#setting-session_cap", Input).value = "1.0"
+        app.screen.query_one("#setting-model", Input).value = "unused-model"
+        await pilot.click("#settings-apply")
+        await pilot.pause()
+        assert isinstance(app.screen, TerminalSettings)
+        assert "ceilings" in str(app.screen.query_one("#settings-error", Static).render())
+        await pilot.press("escape")
+        await until(pilot, lambda: not app.settings_open)
+        assert app.args.model is None and not app.limits and not app.created

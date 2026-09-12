@@ -16,6 +16,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.theme import Theme
 from textual.widgets import Button, Collapsible, Footer, Input, Static
 
 from governor.app_client import AppClient, AppError
@@ -178,7 +179,7 @@ class GovernorTerminal(App):
     #masthead { height: 3; padding: 0 2; border-bottom: solid #35312b; background: #191715; }
     #brand { padding-top: 1; width: 1fr; color: #ff8a3d; text-style: bold; }
     #connection { padding-top: 1; width: auto; color: #aaa59d; }
-    #settings-button { width: 12; min-width: 12; height: 3; margin-left: 2;
+    #settings-button { width: 16; min-width: 16; height: 3; margin-left: 2;
         background: #2c241b; color: #ff994f; border: none; }
     #parameters { height: 2; padding: 0 2; color: #a8a39a; background: #191715; }
     #workspace { height: 1fr; }
@@ -213,6 +214,21 @@ class GovernorTerminal(App):
         self, args, executable, initial_task=None, *, client=None, transport_factory=CodexTransport
     ):
         super().__init__()
+        self.register_theme(
+            Theme(
+                name="governor",
+                primary="#ff994f",
+                secondary="#b4e3a7",
+                accent="#ff994f",
+                warning="#ff994f",
+                success="#b4e3a7",
+                foreground="#efeee9",
+                background="#101010",
+                surface="#171614",
+                panel="#211c17",
+            )
+        )
+        self.theme = "governor"
         self.args, self.executable, self.initial_task = args, executable, initial_task
         self.client = client or AppClient(args.url)
         self.transport_factory = transport_factory
@@ -605,6 +621,9 @@ class GovernorTerminal(App):
                     **({"effort": self.effort} if self.effort else {}),
                 },
             )
+            if self.args.model:
+                self.effective_model = self.args.model
+                self.refresh_parameters()
             # turn/completed may arrive before the response; do not re-mark a finished turn busy.
             if self.busy:
                 self.turn_id = result.get("turn", {}).get("id", self.turn_id)
@@ -758,6 +777,11 @@ class GovernorTerminal(App):
         try:
             self.report = await asyncio.to_thread(self.client.report, self.sid)
             budget = self.report["budget"]
+            limits = self.report.get("client", {}).get("limits", {})
+            max_calls = limits.get("max_tool_calls", self.policy.get("max_tool_calls", "—"))
+            timeout = limits.get(
+                "tool_timeout_seconds", self.policy.get("run_timeout_seconds", "—")
+            )
             available, cap = int(budget["available"]), int(budget["session_cap"])
             blocks = max(0, min(20, int(20 * available / cap))) if cap else 0
             self.query_one("#budget", Static).update(
@@ -769,7 +793,9 @@ class GovernorTerminal(App):
                     + "─" * (20 - blocks)
                     + f"\n\nCap       {dollars(cap)}\nSpent     {dollars(budget['settled'])}"
                     + f"\nHeld      {dollars(budget['held'])}\n\n"
-                    + f"Tools     {len(self.report.get('tool_results', []))}\n"
+                    + f"Per call  {dollars(budget.get('per_call_cap', cap))}\n"
+                    + f"Tools     {len(self.report.get('tool_results', []))} / {max_calls}\n"
+                    + f"Timeout   {timeout}s\n"
                     + f"Runway    {self.report.get('runway', {}).get('state', 'UNKNOWN')}"
                 )
             )

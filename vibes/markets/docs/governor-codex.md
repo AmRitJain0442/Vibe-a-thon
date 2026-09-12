@@ -47,7 +47,7 @@ call or Google credential is required by this path.
 - Replies stream as Codex writes, with bold white headings, orange emphasis and
   light green inline code and notes. Markdown paragraph spacing keeps longer
   explanations readable. Expand a tool row to inspect its arguments,
-  command output, result or error. The budget refreshes every 1.5 seconds.
+  command output, result or error. The budget refreshes every 1.5 seconds by default.
 - **Esc** or `/stop` interrupts the current Codex turn. Existing payment holds stay.
 - **Ctrl+O** or `/app` opens the same session in the web app.
 - `/budget` shows ledger totals; `/help` lists commands.
@@ -65,6 +65,42 @@ The app shows prompts and assistant messages when each message completes,
 including intermediate commentary. Token deltas and command output stream inside
 the terminal. Shell commands and Codex inference charges are outside Governor's
 service-payment ledger. The service-budget panel labels that distinction.
+
+## Adjustable parameters
+
+Press **F2**, click **Settings**, or enter `/settings` while Codex is idle.
+
+| Control | When it applies |
+|---|---|
+| Codex model ID and reasoning effort | Next prompt, on the same Codex thread |
+| Payment mode and Governor tool approvals | Before the first prompt |
+| Session budget and per-call cap, entered in USDC | Before session creation; enforced by the ledger |
+| Maximum Governor tool calls | Entire session, including read-only budget and catalog calls |
+| Tool timeout in seconds | Each Governor tool call; timeouts preserve uncertain holds |
+| Comfortable/compact spacing, sidebar, expanded tool details | Immediately |
+| Budget refresh interval: 1, 1.5, 3 or 5 seconds | Immediately |
+
+Use a model ID available to your Codex account and an effort level that model
+supports. Blank model/effort fields keep Codex's current setting. Codex reports an
+unsupported value in the conversation; correct it in Settings before retrying.
+Changing a model keeps the current thread and Governor budget.
+
+The app's operator configuration supplies the maximum selectable limits. You can
+choose smaller limits for a session; Settings cannot raise the operator ceiling.
+For example, a 0.006 USDC budget and 0.002 USDC per-call cap remain fixed after
+starting, even after reconnecting or restarting the app. The chosen limits appear
+in the terminal budget panel and the app's session audit. Existing sessions keep
+their original limits. Payment mode, caps, call count and tool timeout lock as
+soon as session creation is attempted, including after a lost response.
+
+Model and display choices apply to the current terminal instance. Reopened
+sessions recover their budget limits from the ledger. For a different session
+budget, leave the current session and launch `governor-codex` again. The new
+session's budget is separate; it does not erase earlier spend or outstanding holds.
+
+The header shows the selected model, mode and effort. While Codex runs, the status
+line shows elapsed seconds and the Send button becomes **Stop**. These UI controls
+use the [Codex app-server turn parameters](https://learn.chatgpt.com/docs/app-server).
 
 ## Loaded tools
 

@@ -23,12 +23,12 @@ class TerminalSettings(ModalScreen):
     DEFAULT_CSS = """
     TerminalSettings { align: center middle; background: #080808 80%; }
     #settings-dialog { width: 86; max-width: 95%; height: 38; max-height: 94%;
-        background: #171614; border: round #ff994f; padding: 1 2; }
+        background: #171614; border: round #ff994f; padding: 0 2; }
     #settings-title { color: #ffffff; text-style: bold; height: 1; }
-    #settings-hint { color: #a8a39a; height: auto; margin: 1 0; }
+    #settings-hint { color: #a8a39a; height: auto; margin: 0 0 1 0; }
     #settings-tabs { height: 1fr; }
     TabPane { padding: 0; }
-    .settings-scroll { height: 1fr; padding: 0 1; }
+    .settings-scroll { height: 1fr; padding: 0 1; scrollbar-color: #815337; }
     .field-label { height: auto; color: #efeee9; margin-top: 1; }
     .field-hint { height: auto; color: #a8a39a; }
     #settings-dialog Input, #settings-dialog Select { margin: 0; }
