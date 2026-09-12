@@ -43,7 +43,15 @@ class PacedDemo(DemoModel):
 
 class PacedRunwayDemo(RunwayDemoModel):
     async def generate(self, *args):
-        await asyncio.sleep(0.5)
+        # Give the local dashboard time to display the early warning before
+        # the scripted model follows its approved fallback option.
+        history = args[0]
+        warning = any(
+            part.function_response
+            and part.function_response.response.get("runway", {}).get("state") == "SHORTFALL"
+            for part in history[-1].parts or []
+        )
+        await asyncio.sleep(2 if warning else 0.5)
         return await super().generate(*args)
 
 

@@ -102,12 +102,41 @@ function stats() {
     <article class="stat-card"><div class="stat-top">PAYMENTS BLOCKED ${icon('shield')}</div><div class="stat-value">${String(denied).padStart(2,'0')}<small>REFUSED</small></div><div class="stat-caption">Before payment authorization</div></article>
   </div>`;
 }
+function runwayPanel() {
+  const r = report?.runway || {state:'UNKNOWN',reason:'NO_OBSERVATIONS'};
+  const planned = r.tasksRemaining !== null && r.tasksRemaining !== undefined;
+  const completed = r.tasksCompleted || 0;
+  const total = completed + (r.tasksRemaining || 0);
+  const warning = [...(report?.events || [])].reverse().find(e=>e.kind === 'RUNWAY_STATE_CHANGED' && e.data.to === 'SHORTFALL')?.data.forecast;
+  const reasons = {
+    INSUFFICIENT_SAMPLES:`Learning from completed work. ${r.sampleCount || 0} of 3 cost samples collected.`,
+    TASKS_REMAINING_UNKNOWN:'No caller task list. Affordable calls are shown; completion cost and shortfall are unknown.',
+    INSUFFICIENT_TYPE_SAMPLES:`More samples needed for: ${(r.unknownTaskTypes || []).join(', ')}.`,
+    NO_OBSERVATIONS:'Add a caller task list to forecast the cost of finishing.',
+    NO_OBSERVED_SPEND:'Observed work has no payment cost. No finite task runway can be estimated.',
+    FORECAST_UNAVAILABLE:'Forecast unavailable. The payment ledger still enforces its limits.',
+    PLAN_COMPLETE:'All caller-listed items are complete. Spending policy held throughout.',
+  };
+  const explanation = reasons[r.reason] || (r.state === 'SHORTFALL' ? `Projected shortfall: ${money(r.shortfall)} USDC. Choose a route before the cap is exhausted.` : r.state === 'TIGHT' ? 'The remaining work is close to the budget. Prefer approved cheaper routes.' : 'The p90 estimate leaves room inside the remaining budget.');
+  const unit = r.sampleUnit === 'settled_payment' ? 'calls' : 'tasks';
+  const options = r.options || [];
+  const optionText = o => {
+    switch(o.action) {
+      case 'route-local': return o.requiresApproval ? 'Request permission for local extraction; quality impact is unmeasured.' : `Route ${o.taskIds.length} approved items locally. Estimated payment savings: ${money(o.savings)} USDC. Quality impact unmeasured.`;
+      case 'reduce-scope': return `Request dropping ${o.dropTasks} lower-priority items. Estimated savings: ${money(o.savings)} USDC.`;
+      case 'prioritized-subset': return `Request completing the first ${o.taskIds.length} affordable items, then stopping deliberately.`;
+      case 'raise-cap': return `Request an additional ${money(o.needed)} USDC. The current cap remains unchanged.`;
+      default: return 'Ask approved providers for quotes before choosing a cheaper route.';
+    }
+  };
+  return `<section class="panel runway-panel" aria-label="Budget runway"><div class="panel-head"><h2>${icon('arrow')} Budget runway <span class="advisory-label">ADVISORY</span></h2><div class="runway-heading-actions">${badge(r.state)}<button class="text-button" data-action="runway-demo" ${disabled()}>Try demo ${icon('arrow')}</button></div></div><div class="runway-content"><div class="runway-summary"><div class="eyebrow">${planned ? `${completed} OF ${total} TASKS COMPLETE` : `${completed} OBSERVED ${unit.toUpperCase()}`}</div><p>${esc(explanation)}</p>${planned ? `<div class="task-progress" aria-label="${completed} of ${total} tasks complete">${Array.from({length:Math.min(total,30)},(_,i)=>`<i class="${i < Math.floor(completed * Math.min(total,30) / (total || 1)) ? 'done' : ''}"></i>`).join('')}</div>` : ''}</div><div class="runway-metric"><span>PROJECTED REMAINING COST</span><strong>${r.projected ? `${money(r.projected.p50)} → ${money(r.projected.p90)}` : '—'}</strong><small>${r.projected ? 'USDC / p50 → p90 scenario' : 'Awaiting workload and sufficient samples'}</small></div><div class="runway-metric"><span>AFFORDABLE AT P90</span><strong>${r.runwayTasks ?? '—'} <small>${unit}</small></strong><small>${r.burnRate ? `${money(r.burnRate.p90)} USDC / ${unit === 'calls' ? 'call' : 'task'}` : 'No supported estimate yet'}</small></div></div>${options.length ? `<div class="runway-options"><span class="eyebrow">PLANNING OPTIONS · NO AUTOMATIC CAP OR SCOPE CHANGES</span><ul>${options.map(o=>`<li>${esc(optionText(o))}</li>`).join('')}</ul></div>` : ''}${warning && r.state !== 'SHORTFALL' ? `<div class="runway-history">Earlier warning: ${warning.tasksCompleted} tasks done, ${money(warning.remaining)} USDC left, ${money(warning.projected.p90)} projected at p90. Short by ${money(warning.shortfall)} USDC. ${r.reason === 'PLAN_COMPLETE' ? `Finished all ${completed} items with ${money(r.remaining)} USDC remaining.` : 'See runway events for the subsequent decisions.'}</div>` : ''}<div class="panel-foot"><span>OBSERVED COSTS · PAYMENT BUDGET ONLY · ${r.mixedTaskTypes ? 'SEPARATE ESTIMATES PER TASK TYPE' : 'MINIMUM 3 SAMPLES'}</span><span>THE LEDGER ALWAYS DECIDES</span></div></section>`;
+}
 function overview() {
   return `<section class="hero" aria-labelledby="hero-title"><span class="corner tl" aria-hidden="true">+</span><span class="corner tr" aria-hidden="true">+</span><span class="corner bl" aria-hidden="true">+</span>
     <div class="hero-copy"><div class="hero-label"><span class="square-dot"></span> AUTONOMY, WITH A HARD LIMIT.</div><h2 id="hero-title">LET IT RUN.<br><span>SET THE LIMIT.</span></h2><p>Give your AI agent room to work.<br>Keep every payment inside your rules.</p><div class="hero-actions"><button class="button button-primary" data-action="launch" ${disabled()}>Launch an agent ${icon('arrow')}</button><button class="text-button" data-action="demo" ${disabled()}>${icon('terminal')} Run sandbox demo</button></div></div>
     <div class="hero-art"><img src="/assets/guardian.png" width="1254" height="1254" alt="Clay robot guardian holding an orange shield"><span class="art-label">YOUR FRIENDLY BUDGET ENFORCER / 001</span></div></section>
     <div class="section-top"><h2 class="section-title">Session at a glance <small>SIMULATED USDC</small></h2>${sessionPicker()}</div>
-    ${stats()}
+    ${stats()}${runwayPanel()}
     <div class="main-grid"><section class="panel"><div class="panel-head"><h2>${icon('terminal')} Agent session</h2>${badge(report?.status || 'READY')}</div>${sessionBody()}<div class="panel-foot"><span>${esc(report ? report.session_id : 'WAITING FOR YOUR FIRST MISSION')}</span><a class="text-button" href="${report ? '#sessions/' + esc(report.session_id) : '#sessions'}">View session ${icon('arrow')}</a></div></section>
     <section class="panel"><div class="panel-head"><h2>${icon('shield')} Spending guardrails</h2><span class="status-badge">ENFORCED</span></div><div class="policy-preview"><img src="/assets/vault.png" alt="Clay vault with an orange door" width="1254" height="1254"><div><div class="policy-line"><span>Session cap</span><strong>${money(state.policy.session_cap)} USDC</strong></div><div class="policy-line"><span>Per-call cap</span><strong>${money(state.policy.per_call_cap)} USDC</strong></div><div class="policy-line"><span>Payment mode</span><strong class="orange">Sandbox</strong></div></div></div><div class="policy-note">Limits checked before authorization. Every decision recorded.</div><div class="panel-foot"><span>POLICY LIVES OUTSIDE THE MODEL</span><a class="text-button" href="#policy">View policy ${icon('arrow')}</a></div></section></div>
     ${activity()}`;
@@ -124,6 +153,10 @@ function eventMessage(event) {
   switch(event.kind) {
     case 'SESSION_CREATED': return 'New session created. Spending policy attached.';
     case 'SESSION_RESUMED': return 'Session resumed. Existing holds preserved.';
+    case 'TASK_PLAN': return `Caller task list attached: ${d.items.length} items, in priority order.`;
+    case 'LOCAL_TASK_COMPLETED': return `${d.task_id} completed with caller-approved local extraction.`;
+    case 'RUNWAY_CHECK': return `Runway ${d.forecast.state} / ${d.forecast.reason || 'advisory check'}${d.forecast.shortfall && d.forecast.shortfall !== '0' ? ' / short by ' + money(d.forecast.shortfall) + ' USDC' : ''}`;
+    case 'RUNWAY_STATE_CHANGED': return `${d.from || 'INITIAL'} → ${d.to} / ${d.forecast.tasksCompleted ?? 0} tasks complete / ${d.forecast.projected ? money(d.forecast.projected.p90) + ' USDC projected at p90' : 'projection unavailable'}`;
     case 'RUN_STARTED': return `Agent started → ${d.model}`;
     case 'MODEL_RESPONSE': return `Model turn ${d.turn} / ${d.cumulative_usage?.input_tokens || 0} input tokens`;
     case 'TOOL_RESULT': return `${d.name} → ${d.code}`;
@@ -141,13 +174,14 @@ function activity() {
   let events = report?.events || [];
   if (filter === 'payments') events = events.filter(e=>['RESERVED','AUTHORIZING','SETTLED','RELEASED','DENIED','PAYMENT_REFUSED','PAYMENT_PENDING','PAYMENT_UNCERTAIN','SETTLEMENT_MISMATCH'].includes(e.kind));
   if (filter === 'blocked') events = events.filter(e=>e.kind === 'DENIED' || e.kind === 'PAYMENT_REFUSED');
-  return `<section class="activity terminal" aria-label="Agent activity"><div class="terminal-head"><div class="terminal-title"><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span><h2 class="section-title">Activity stream</h2></div><div class="terminal-filter" role="group" aria-label="Activity filter">${['all','payments','blocked'].map(f=>`<button data-filter="${f}" class="${filter === f ? 'active' : ''}" aria-pressed="${filter === f}">${f.toUpperCase()}</button>`).join('')}</div></div><div class="terminal-log" tabindex="0" aria-label="Audit events">${events.length ? events.map(e=>`<div class="log-line"><span class="log-time">${time(e.time)}</span><span class="log-kind ${e.kind.includes('DENIED') || e.kind.includes('REFUSED') || e.kind.includes('ERROR') ? 'warn' : ''}">${esc(e.kind)}</span><span class="log-data">${esc(eventMessage(e))}</span></div>`).join('') : `<div class="terminal-empty"><span class="prompt">governor@local:~$</span> ${report ? 'No matching events.' : 'awaiting mission'}<br>${report ? 'Choose another filter to inspect the session.' : 'Runtime ready. Budget gate initialized.<br>Launch an agent to see its decisions here.'}<br><span class="prompt">&gt;</span> <span class="cursor"></span></div>`}</div><div class="terminal-foot"><span>${report?.status === 'RUNNING' ? '● RUNNING' : '○ IDLE'} / ${events.length} EVENTS</span><span>PAYMENTS SIMULATED · NO ON-CHAIN TRANSACTIONS</span></div></section>`;
+  if (filter === 'runway') events = events.filter(e=>e.kind.startsWith('RUNWAY_'));
+  return `<section class="activity terminal" aria-label="Agent activity"><div class="terminal-head"><div class="terminal-title"><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span><h2 class="section-title">Activity stream</h2></div><div class="terminal-filter" role="group" aria-label="Activity filter">${['all','payments','blocked','runway'].map(f=>`<button data-filter="${f}" class="${filter === f ? 'active' : ''}" aria-pressed="${filter === f}">${f.toUpperCase()}</button>`).join('')}</div></div><div class="terminal-log" tabindex="0" aria-label="Audit events">${events.length ? events.map(e=>`<div class="log-line"><span class="log-time">${time(e.time)}</span><span class="log-kind ${e.kind.includes('DENIED') || e.kind.includes('REFUSED') || e.kind.includes('ERROR') || ['SHORTFALL','TIGHT'].includes(e.data.to) ? 'warn' : ''}">${esc(e.kind)}</span><span class="log-data">${esc(eventMessage(e))}</span></div>`).join('') : `<div class="terminal-empty"><span class="prompt">governor@local:~$</span> ${report ? 'No matching events.' : 'awaiting mission'}<br>${report ? 'Choose another filter to inspect the session.' : 'Runtime ready. Budget gate initialized.<br>Launch an agent to see its decisions here.'}<br><span class="prompt">&gt;</span> <span class="cursor"></span></div>`}</div><div class="terminal-foot"><span>${report?.status === 'RUNNING' ? '● RUNNING' : '○ IDLE'} / ${events.length} EVENTS</span><span>PAYMENTS SIMULATED · NO ON-CHAIN TRANSACTIONS</span></div></section>`;
 }
 function sessionsView() {
   const id = route().id;
   if (id) {
     if (!report || report.session_id !== id) return '<div class="empty">This session is unavailable. Return to the session list or inspect its policy using the CLI.</div>';
-    return `<div class="toolbar"><a class="text-button" href="#sessions">← All sessions</a><div class="wallet-actions"><a class="button button-outline compact" href="/api/sessions/${esc(id)}?format=json" download>${icon('download')} Audit JSON</a><a class="button button-outline compact" href="/api/sessions/${esc(id)}?format=csv" download>${icon('download')} Expenses CSV</a></div></div><section class="panel"><div class="panel-head"><h2>${esc(id)}</h2>${badge(report.status)}</div>${sessionBody()}</section><div class="section-top"><h2 class="section-title">Session budget <small>SIMULATED USDC</small></h2></div>${stats()}${report.result?.answer ? `<section class="answer"><h2>${icon('terminal')} Agent response</h2><p>${esc(report.result.answer)}</p></section>` : ''}${attempts()}${activity()}`;
+    return `<div class="toolbar"><a class="text-button" href="#sessions">← All sessions</a><div class="wallet-actions"><a class="button button-outline compact" href="/api/sessions/${esc(id)}?format=json" download>${icon('download')} Audit JSON</a><a class="button button-outline compact" href="/api/sessions/${esc(id)}?format=csv" download>${icon('download')} Expenses CSV</a></div></div><section class="panel"><div class="panel-head"><h2>${esc(id)}</h2>${badge(report.status)}</div>${sessionBody()}</section><div class="section-top"><h2 class="section-title">Session budget <small>SIMULATED USDC</small></h2></div>${stats()}${runwayPanel()}${report.result?.answer ? `<section class="answer"><h2>${icon('terminal')} Agent response</h2><p>${esc(report.result.answer)}</p></section>` : ''}${attempts()}${activity()}`;
   }
   const sessions = state.sessions.filter(s=>(s.task + s.session_id).toLowerCase().includes(search.toLowerCase()));
   return `<p class="subheading">Every task has its own budget, persistent holds, and a record of every decision.</p><div class="toolbar"><input id="session-search" type="search" placeholder="Search sessions…" aria-label="Search sessions" value="${esc(search)}"><span class="fine-print">${state.sessions.length} LOCAL SESSIONS</span></div><div class="session-list">${sessions.length ? sessions.map(s=>`<button class="session-row" data-session="${esc(s.session_id)}" ${s.compatible ? '' : 'disabled'}><span class="row-icon">${icon('terminal')}</span><span><span class="row-title">${esc(s.task)}</span><span class="row-sub">${esc(s.session_id)} ${s.compatible ? '' : '· Policy changed — inspect with CLI'}</span></span><span class="row-date">${date(s.created_at)}</span>${icon('chevron')}</button>`).join('') : `<div class="panel empty"><img src="/assets/guardian.png" alt=""><strong>${search ? 'No matching sessions.' : 'A clean slate.'}</strong>${search ? 'Try another search.' : 'Your next idea starts with a mission.'}${search ? '' : '<br><button class="text-button" data-action="launch">Launch your first agent ↗</button>'}</div>`}</div>`;
@@ -217,17 +251,21 @@ function openLauncher(task = '') {
   $('#launch-error').hidden = true;
   $('#run-mode').value = 'gemini';
   $('#task').value = task;
+  $('#task-list').value = '';
+  $('#allow-local').checked = false;
   $('#launch-policy').innerHTML = `<div><span>SESSION CAP</span> ${money(state.policy.session_cap)} USDC</div><div><span>PER CALL</span> ${money(state.policy.per_call_cap)} USDC</div>`;
   modeChanged();
   $('#launch-dialog').showModal();
   $('#task').focus();
 }
 function modeChanged() {
-  const demo = $('#run-mode').value === 'demo';
+  const demo = $('#run-mode').value !== 'gemini';
+  $('#task-list').disabled = demo;
+  $('#allow-local').disabled = demo;
   $('#task').disabled = demo;
   $('#task').required = !demo;
   $$('.task-presets button').forEach(button => {button.disabled = demo;});
-  $('#mode-note').textContent = demo ? 'A scripted scenario exercises purchases, cap refusals, a lost settlement response, and a local fallback. No API calls or wallet transactions.' : 'Gemini inference uses your configured Google credentials. Model costs are separate from the simulated USDC budget.';
+  $('#mode-note').textContent = $('#run-mode').value === 'runway-demo' ? 'Ten pre-approved items: pay for three, detect the p90 shortfall, then finish locally. Includes a separate hard-cap refusal. No API calls or wallet transactions.' : demo ? 'A scripted scenario exercises purchases, cap refusals, a lost settlement response, and a local fallback. No API calls or wallet transactions.' : 'Gemini inference uses your configured Google credentials. Model costs are separate from the simulated USDC budget.';
 }
 async function startRun(mode, task = '') {
   if(submitting) return;
@@ -236,12 +274,19 @@ async function startRun(mode, task = '') {
   $('#launch-error').hidden = true;
   render();
   try {
-    const result = await api('/api/runs', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,task})});
+    const payload = {mode,task};
+    if (mode === 'gemini' && $('#task-list').value.trim()) {
+      payload.task_list = $('#task-list').value.split('\n').map(line=>line.trim()).filter(Boolean).map((line,i)=>{
+        const separator = line.indexOf('|');
+        return {id:'task-' + String(i+1).padStart(2,'0'),type:separator < 0 ? 'summary' : line.slice(0,separator).trim(),text:separator < 0 ? line : line.slice(separator+1).trim(),allow_local:$('#allow-local').checked};
+      });
+    }
+    const result = await api('/api/runs', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     selected = result.session_id;
     storage.set('governor.session',selected);
     $('#launch-dialog').close();
     location.hash = 'sessions/' + selected;
-    toast(mode === 'demo' ? 'Sandbox started. Watch the spending gate at work.' : 'Agent launched. Your spending rules are active.');
+    toast(mode !== 'gemini' ? 'Sandbox started. Watch the spending gate at work.' : 'Agent launched. Your spending rules are active.');
     await refresh();
   } catch(error) {
     if ($('#launch-dialog').open) { $('#launch-error').textContent = error.message; $('#launch-error').hidden = false; }
@@ -278,6 +323,7 @@ document.addEventListener('click', async event => {
   switch(button.dataset.action) {
     case 'launch': return openLauncher();
     case 'demo': return startRun('demo');
+    case 'runway-demo': return startRun('runway-demo');
     case 'wallet-refresh': return refreshWallet();
     case 'copy-address':
       try {await navigator.clipboard.writeText(wallet.address); toast('Wallet address copied.');}
