@@ -27,3 +27,5 @@ dialog{width:540px;max-width:calc(100% - 28px);padding:27px;border:1px solid var
 
 .scout-ranking-rule{font-size:12px;line-height:1.9;color:var(--muted);margin:0 0 15px}.scout-usage{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;padding:12px 20px;border-top:1px dashed var(--line);font-size:11px;color:var(--muted)}.scout-usage small{font-size:11px}.branch-node.failed{background:transparent;border:1px solid var(--accent)}
 @media(max-width:680px){.scout-usage{padding:12px 15px}.scout-ranking-rule{font-size:11px}}
+/* Codex tool output contains user text and long transaction identifiers. */
+.codex-tool-output { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; font: inherit; font-size: .85rem; }
