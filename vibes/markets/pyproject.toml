@@ -13,6 +13,9 @@ dependencies = [
   "python-dotenv>=1.2.3,<2",
 ]
 
+[project.scripts]
+governor = "governor.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=9.1,<10", "pytest-asyncio>=1.4,<2", "ruff>=0.16,<0.17", "httpx>=0.28,<1"]
 
