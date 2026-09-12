@@ -172,6 +172,7 @@ class Ledger:
         resume: bool = False,
         plan: list | None = None,
         payment_mode: str = "mock",
+        client_request: dict | None = None,
     ) -> None:
         if payment_mode not in ("mock", "solana-devnet"):
             raise LedgerError("unsupported payment mode")
@@ -197,6 +198,8 @@ class Ledger:
                 "SESSION_RESUMED" if resume else "SESSION_CREATED",
                 {"payment_mode": payment_mode},
             )
+            if client_request is not None and not resume:
+                self._event(db, session_id, "CLIENT_REQUEST", client_request)
             if not resume and plan is not None:
                 self._event(db, session_id, "TASK_PLAN", {"items": plan})
 

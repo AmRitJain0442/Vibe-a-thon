@@ -33,6 +33,7 @@ from governor.ledger import Ledger, LedgerError
 from governor.mock import MockPaymentAdapter
 from governor.networks import DEVNET_RPC
 from governor.payments import PaymentGate
+from governor.plugin_sessions import PluginSessions
 from governor.runway import validate_plan
 from governor.solana_wallet import DevnetRPC, WalletError, load_wallet
 from governor.tools import ToolRegistry
@@ -71,6 +72,7 @@ class Dashboard:
         self.ledger = Ledger(settings.data_dir / "ledger.sqlite3", settings.policy)
         self.lock = threading.Lock()
         self.active: str | None = None
+        self.plugin = PluginSessions(self)
 
     def state(self) -> dict:
         with self.lock:
@@ -81,6 +83,7 @@ class Dashboard:
             "project": self.settings.project,
             "location": self.settings.location,
             "payment_mode": "mock",
+            "plugin_api": 1,
             "network": "Solana Devnet",
             "policy": {
                 "session_cap": str(self.settings.policy.session_cap),
@@ -131,6 +134,7 @@ class Dashboard:
         report["status"] = (
             "RUNNING" if active else finished["data"]["status"] if finished else "INTERRUPTED"
         )
+        self.plugin.decorate(report, active)
         if not active and report["discovery"]["status"] in ("PLANNING", "SEARCHING", "RANKING"):
             report["discovery"] = {
                 **report["discovery"],
@@ -419,7 +423,14 @@ def make_server(app: Dashboard, port: int = 8787) -> ThreadingHTTPServer:
         def do_POST(self):
             if not self.allowed(mutation=True):
                 return
-            if self.path not in ("/api/runs", "/api/discovery", "/api/reconcile"):
+            if self.path not in (
+                "/api/runs",
+                "/api/discovery",
+                "/api/reconcile",
+                "/api/plugin/runs",
+                "/api/plugin/calls",
+                "/api/plugin/finish",
+            ):
                 return self.respond(404, {"error": "Endpoint not found."})
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -427,15 +438,21 @@ def make_server(app: Dashboard, port: int = 8787) -> ThreadingHTTPServer:
                     return self.respond(413, {"error": "Request is too large or empty."})
                 self.connection.settimeout(10)
                 payload = json.loads(self.rfile.read(length))
+                if self.path == "/api/plugin/calls":
+                    return self.respond(200, app.plugin.call(payload))
+                if self.path == "/api/plugin/finish":
+                    return self.respond(200, app.plugin.finish(payload))
                 if self.path == "/api/reconcile":
                     return self.respond(200, app.reconcile(payload))
+                if self.path == "/api/plugin/runs":
+                    return self.respond(202, {"session_id": app.plugin.create(payload)})
                 start = app.discover if self.path == "/api/discovery" else app.start
                 return self.respond(202, {"session_id": start(payload)})
             except BusyError as exc:
                 self.respond(409, {"error": str(exc)})
             except ConfigurationError as exc:
                 self.respond(400, {"error": str(exc)})
-            except (ValueError, UnicodeDecodeError):
+            except (ValueError, UnicodeDecodeError, argparse.ArgumentTypeError):
                 self.respond(400, {"error": "Provide a valid task or service search query."})
             except (LedgerError, sqlite3.Error, OSError):
                 self.respond(503, {"error": "Cannot start a run. Local state is unavailable."})
