@@ -16,7 +16,8 @@ and records actual USDC spend. Arbitrary Bazaar sellers are not yet purchasable.
 
 ## Codex CLI plugin
 
-Run `governor-codex "your task"` to launch Codex with native Governor tools already
+Run `governor-codex` for an interactive orange-and-black terminal with streamed
+Codex replies, expandable tool activity and a live budget. Governor tools are already
 loaded. Use `--exec` for a single noninteractive task. See the
 [embedded Codex launcher](docs/governor-codex.md).
 

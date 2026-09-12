@@ -1,14 +1,17 @@
 # Run Codex inside Governor
 
-`governor-codex` launches your installed Codex CLI with ten native Governor MCP
-tools loaded at startup. Codex remains the reasoning agent. Each launch opens one
-Governor budget session and prints its app link before starting Codex.
+`governor-codex` opens an orange-and-black interactive terminal with a prompt,
+streaming Codex replies, expandable tool calls and live service-budget totals.
+Codex runs inside it through its persistent app-server with ten native Governor
+MCP tools. Codex remains the reasoning agent. The first prompt creates one
+Governor budget session; follow-up prompts reuse that budget and conversation.
 
 ## Start
 
 Install the updated package from `vibes/markets`:
 
 ```bash
+.venv/bin/pip install -r requirements.lock
 .venv/bin/pip install -e . --no-deps
 .venv/bin/governor-web
 ```
@@ -16,7 +19,10 @@ Install the updated package from `vibes/markets`:
 In another terminal:
 
 ```bash
-# Interactive Codex, with a Governor budget and native tools.
+# Open the interactive terminal and type a prompt.
+governor-codex
+
+# Or start with a prompt already supplied.
 governor-codex "Summarize this project using Governor's approved tools"
 
 # One task, returning control when Codex finishes.
@@ -34,6 +40,29 @@ The app must be running. Real payments also require `governor-vendor` and funded
 Devnet USDC accounts, as described in the [vendor setup](../src/governor/vendor/README.md).
 Default mode is mock. Codex uses its existing login and configured model; no Gemini
 call or Google credential is required by this path.
+
+## Terminal controls
+
+- **Enter** sends your prompt; **Up/Down** recalls earlier prompts.
+- Replies stream as Codex writes. Expand a tool row to inspect its arguments,
+  command output, result or error. The budget refreshes every 1.5 seconds.
+- **Esc** or `/stop` interrupts the current Codex turn. Existing payment holds stay.
+- **Ctrl+O** or `/app` opens the same session in the web app.
+- `/budget` shows ledger totals; `/help` lists commands.
+- `/finish` saves the latest answer and closes the budget session. An interrupted
+  turn is saved as `STOPPED`, rather than reported as a successful completion.
+- **Ctrl+Q** or `/quit` exits, leaving the session open for later work.
+
+Codex command and file-change approvals appear as explicit **Allow once / Deny**
+prompts. User-input questions appear as forms. Unsupported app-server requests
+are refused with an explanation; `--native` uses Codex's own UI for those workflows.
+The terminal inherits your Codex login, model, sandbox and approval policy.
+It respects `NO_COLOR` when set in your environment.
+
+The app shows prompts and assistant messages when each message completes,
+including intermediate commentary. Token deltas and command output stream inside
+the terminal. Shell commands and Codex inference charges are outside Governor's
+service-payment ledger. The service-budget panel labels that distinction.
 
 ## Loaded tools
 
@@ -75,27 +104,46 @@ support only the explicitly configured local `vendor-summary` service.
 - `--json` with `--exec` streams Codex's JSONL events to stdout. Launcher session
   links and diagnostics go to stderr.
 - `--url http://127.0.0.1:PORT` or `GOVERNOR_APP_URL` selects another local app port.
-- `--session codex-ID` attaches a new Codex process to an existing open Governor
-  budget. It preserves spend, holds and the original task plan. It does not resume
-  Codex's private conversation history; `get_session` supplies Governor's evidence.
+- `--session codex-ID` reopens an existing open Governor budget, preserving spend,
+  holds and its original task plan. In the default terminal, it also resumes the
+  saved Codex thread on this machine and restores mirrored messages from the app.
+  Use the same app URL and `--cwd`. The thread mapping lives in Governor's local
+  user-state directory, with owner-only file permissions.
+- `--native` launches Codex's original terminal UI with Governor tools loaded.
+  This fallback and `--exec` attach to the Governor budget without resuming the
+  custom terminal's conversation; `get_session` supplies prior ledger evidence.
 
 Stable `call_id` arguments preserve the existing plugin's retry protection. The
 same ID and arguments return the saved result or pending state. Signed payment
 uncertainty retains its hold. Receipt reconciliation only reads existing evidence.
 Changing call IDs cannot bypass the purchase identity or cap checks.
 
-In interactive mode, the session remains open for follow-up work until Codex calls
+In interactive mode, the session remains open for follow-up work until you use `/finish` or explicitly ask Codex to call
 `finish_session`. Closing the TUI without finishing preserves the budget for a
 later `--session` attachment. In `--exec` mode, Codex is instructed to submit its
 final answer; if it exits successfully without doing so, the launcher saves its
 last message as the session result. A failed or interrupted child does not clear
 holds, reset the budget or invent a successful result.
 
-Governor displays its mediated tool calls and submitted final answer. Codex's
-unrelated shell work, private conversation and inference billing are not governed
-or fully mirrored by this payment ledger.
+Closing the terminal does not close its budget. A lost create response retains
+the same session ID and request payload, so retrying cannot allocate a fresh cap.
+An unavailable web app is reported inside the terminal; start `governor-web`
+and retry your prompt.
 
 ## Verification
+
+The interactive terminal was exercised with real Codex CLI 0.154.0: native
+`get_budget` and `list_services` calls, streamed answers, and a second prompt
+that recalled the first prompt's word on the same Codex thread. `/finish` saved
+the final answer. The budget stayed at 10,000 atomic USDC, with zero spend or holds.
+Terminal tests cover typed prompts, deltas, tool rows, explicit approvals,
+interruption, prompt history, compact layout, persisted thread resume, lost-create
+response recovery and immutable payment mode. Conversation messages have durable,
+idempotent app records and never consume a payment-tool allowance.
+
+The terminal uses the official
+[Codex app-server protocol](https://learn.chatgpt.com/docs/app-server) over stdio.
+
 
 The real Codex CLI 0.154.0 was launched through `governor-codex --exec --json` using
 the installed account and a read-only shell sandbox. Session
