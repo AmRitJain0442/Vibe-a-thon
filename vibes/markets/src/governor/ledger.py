@@ -434,6 +434,23 @@ class Ledger:
                 "budget": snapshot,
                 "attempts": attempts,
                 "events": events,
+                "discovery": next(
+                    (
+                        e["data"]["discovery"]
+                        for e in reversed(events)
+                        if e["kind"].startswith("DISCOVERY_") and "discovery" in e["data"]
+                    ),
+                    {
+                        "status": "IDLE",
+                        "query": "",
+                        "queries": [],
+                        "candidates": [],
+                        "selected_id": None,
+                        "summary": "",
+                        "errors": [],
+                        "partial_results": False,
+                    },
+                ),
                 "runway": next(
                     (
                         e["data"]["forecast"]
