@@ -20,6 +20,7 @@ from governor.app_client import AppClient, AppError
 from governor.codex_launcher import mcp_configuration
 from governor.codex_transport import CodexTransport
 from governor.plugin_sessions import identifier
+from governor.terminal_text import AssistantReply
 
 
 def dollars(value):
@@ -272,7 +273,10 @@ class GovernorTerminal(App):
         self.query_one("#status", Static).update(Text(text))
 
     async def add(self, text, kind="notice"):
-        widget = Static(Text(text), classes="message " + kind if kind != "notice" else "notice")
+        content = (
+            AssistantReply(text.removeprefix("CODEX\n")) if kind == "assistant" else Text(text)
+        )
+        widget = Static(content, classes="message " + kind if kind != "notice" else "notice")
         pane = self.query_one(Conversation)
         await pane.mount(widget)
         pane.follow()
@@ -483,7 +487,7 @@ class GovernorTerminal(App):
                 self.messages[key] = [await self.add("CODEX\n", "assistant"), ""]
             entry = self.messages[key]
             entry[1] += params.get("delta", "")
-            entry[0].update(Text("CODEX\n" + entry[1]))
+            entry[0].update(AssistantReply(entry[1]))
             self.query_one(Conversation).follow()
         elif method in ("item/started", "item/completed"):
             item = params.get("item", {})
@@ -496,6 +500,10 @@ class GovernorTerminal(App):
                     self.mirror_message_worker("assistant", answer, key)
                 if key not in self.messages:
                     self.messages[key] = [await self.add("CODEX\n" + answer, "assistant"), answer]
+                elif answer:
+                    self.messages[key][1] = answer
+                    self.messages[key][0].update(AssistantReply(answer))
+                self.query_one(Conversation).follow()
             elif kind in (
                 "mcpToolCall",
                 "commandExecution",
