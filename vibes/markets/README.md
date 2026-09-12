@@ -81,6 +81,9 @@ the scripted model for Gemini.
 
 For Google Cloud authentication:
 
+The current development project is configured and has passed a live Gemini tool
+call. See [Google Cloud connection](docs/gcp.md) for the project and reproducible setup.
+
 ```bash
 gcloud auth application-default login
 ```
