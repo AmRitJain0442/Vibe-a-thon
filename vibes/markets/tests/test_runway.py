@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from google.genai import types
 
 from governor import runway
 from governor.agent import Agent
@@ -109,6 +110,20 @@ def test_variance_is_exact():
         "numerator": "6000000",
         "denominator": "9",
     }
+
+
+def test_local_fallbacks_cannot_dilute_the_paid_baseline():
+    data = inputs([2000] * 3, remaining=4000, pending=6)
+    data["samples"] += [
+        {"id": f"local-{i}", "type": "summary", "costAtomic": "0", "route": "local"}
+        for i in range(50)
+    ]
+    data["tasksCompleted"] = 53
+    result = forecast(data)
+    assert result["tasksCompleted"] == 53
+    assert result["sampleCount"] == 3
+    assert result["projected"]["p90"] == "12000"
+    assert result["state"] == "SHORTFALL"
 
 
 def test_local_scope_and_cap_options_require_caller_authority():
@@ -234,3 +249,23 @@ def test_invalid_plans_are_rejected_without_guessing():
     ):
         with pytest.raises(ValueError):
             validate_plan(bad)
+
+
+async def test_model_cannot_claim_an_unfinished_plan_is_complete(gate):
+    class FinishesEarly:
+        async def generate(self, *_args):
+            return types.GenerateContentResponse(
+                candidates=[
+                    types.Candidate(
+                        content=types.Content(
+                            role="model", parts=[types.Part.from_text(text="Done.")]
+                        ),
+                        finish_reason=types.FinishReason.STOP,
+                    )
+                ]
+            )
+
+    result = await Agent(FinishesEarly(), ToolRegistry(gate), Settings()).run(RUNWAY_TASK)
+    assert result.status == "PLAN_INCOMPLETE"
+    assert result.runway["tasksRemaining"] == 10
+    assert result.budget["available"] == "10000"

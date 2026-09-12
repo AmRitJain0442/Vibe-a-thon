@@ -75,6 +75,7 @@ def inputs_for(session_id: str, budget: dict, attempts: list, events: list) -> d
                         "id": task["id"],
                         "type": task["type"],
                         "costAtomic": str(sum(a["amount"] for a in paid)),
+                        "route": "paid" if paid else "local",
                     }
                 )
         else:
@@ -108,7 +109,9 @@ def distribution(costs: list[int]) -> dict:
 def forecast(inputs: dict) -> dict:
     """Describe observed cost risk. Never grant authority or rewrite the task list."""
     remaining = int(inputs["remainingAtomic"])
-    samples = inputs["samples"]
+    # Keep the paid baseline separate: many zero-cost fallbacks must not make
+    # a later item that requires paid quality look free. Completion still counts.
+    samples = [s for s in inputs["samples"] if s.get("route", "paid") == "paid"]
     pending = inputs["pending"]
     result = {
         "state": "UNKNOWN",
@@ -117,7 +120,8 @@ def forecast(inputs: dict) -> dict:
         "remaining": str(remaining),
         "sampleCount": len(samples),
         "minimumSamples": 3,
-        "sampleUnit": "caller_task" if inputs["hasPlan"] else "settled_payment",
+        "sampleUnit": "paid_caller_task" if inputs["hasPlan"] else "settled_payment",
+        "basis": "observed paid costs; local completions tracked separately",
         "method": "empirical-nearest-rank-per-type",
         "advisoryOnly": True,
         "options": [],
