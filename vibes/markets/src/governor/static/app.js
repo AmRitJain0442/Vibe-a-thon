@@ -141,6 +141,10 @@ function advertisedPrice(amount, compatible) {
 }
 function discoveryPanel() {
   const d = report?.discovery;
+  if (codexSession()) {
+    const candidates=d?.candidates || [];
+    return `<section class="panel discovery-panel"><div class="panel-head"><h2>${icon('blocks')} Codex vendor search</h2>${badge(d?.status || 'IDLE')}</div><div class="discovery-content"><p>Codex searches Bazaar and assesses the listings itself. ${d?.status === 'SEARCHING' ? 'Searching the registry now…' : 'Discovered sellers are advisory; the purchase allowlist stays fixed.'}</p>${d?.query ? `<p class="fine-print">QUERY / ${esc(d.query)}</p>` : ''}${(d?.errors || []).map(e=>`<p class="form-error">${esc(e)}</p>`).join('')}${candidates.map(c=>`<details><summary>${esc(c.description || c.resource || c.id)} · ${esc(advertisedPrice(c.amount,c.compatible))}</summary><pre class="codex-tool-output">${esc(JSON.stringify(c,null,2))}</pre></details>`).join('')}</div><div class="panel-foot"><span>${candidates.length} LISTINGS · ASSESSMENT BY CODEX</span><span>NO GEMINI SCOUT</span></div></section>`;
+  }
   if (!d || d.status === 'IDLE') return `<section class="panel discovery-panel"><div class="panel-head"><h2>${icon('blocks')} Vendor scout</h2><span class="status-badge">READY</span></div><div class="discovery-empty"><strong>Find a vendor for the mission<span class="orange">_</span></strong><p>A Gemini scout can search Bazaar in parallel, compare advertised prices and explain its shortlist.</p><a class="text-button" href="#services">Explore Bazaar ${icon('arrow')}</a></div></section>`;
   const live = ['PLANNING','SEARCHING','RANKING'].includes(d.status);
   const stages = ['PLANNING','SEARCHING','RANKING'];

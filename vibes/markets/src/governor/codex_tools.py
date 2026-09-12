@@ -34,7 +34,19 @@ class CodexTools(ToolRegistry):
         ledger, sid = self.gate.ledger, self.gate.session_id
         if name == "discover_vendors":
             ledger.record(
-                sid, "DISCOVERY_SEARCH_STARTED", {"query": parsed.query, "agent": "codex"}
+                sid,
+                "DISCOVERY_SEARCH_STARTED",
+                {
+                    "query": parsed.query,
+                    "agent": "codex",
+                    "discovery": {
+                        "status": "SEARCHING",
+                        "agent": "codex",
+                        "query": parsed.query,
+                        "candidates": [],
+                        "errors": [],
+                    },
+                },
             )
             try:
                 async with httpx.AsyncClient(trust_env=False) as client:
