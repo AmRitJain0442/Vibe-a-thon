@@ -33,6 +33,12 @@ def parser():
         "--model", help="forward a model choice to Codex; otherwise use its configuration"
     )
     root.add_argument("--profile")
+    root.add_argument(
+        "--tool-approval",
+        choices=("approve", "auto", "prompt", "writes"),
+        default="approve",
+        help="approval policy for this session-bound Governor connection; ledger caps always apply",
+    )
     root.add_argument("--sandbox", choices=("read-only", "workspace-write", "danger-full-access"))
     root.add_argument(
         "--json", action="store_true", help="forward Codex JSONL output in --exec mode"
@@ -47,7 +53,10 @@ def command(args, executable, client, sid, task, mode, output=None):
         + json.dumps(sys.executable)
         + ",args="
         + json.dumps(mcp_args)
-        + ",required=true,enabled=true,startup_timeout_sec=20,tool_timeout_sec=130}"
+        + ",required=true,enabled=true,startup_timeout_sec=20,tool_timeout_sec=130"
+        + ",default_tools_approval_mode="
+        + json.dumps(args.tool_approval)
+        + "}"
     )
     cmd = [executable]
     if args.headless:

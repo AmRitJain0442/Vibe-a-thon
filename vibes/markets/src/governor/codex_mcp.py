@@ -30,6 +30,13 @@ class Bridge:
                     "description": description
                     + " Use a stable call_id; reuse identical arguments after a lost response.",
                     "inputSchema": schema,
+                    "annotations": {
+                        "readOnlyHint": name
+                        in ("get_budget", "get_runway", "list_services", "get_vendor_search"),
+                        "destructiveHint": name == "purchase_service",
+                        "idempotentHint": True,
+                        "openWorldHint": name in ("purchase_service", "discover_vendors"),
+                    },
                 }
             )
         for name, description, properties, required in [

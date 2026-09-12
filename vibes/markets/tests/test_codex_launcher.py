@@ -113,6 +113,7 @@ def test_invocation_scopes_mcp_config_and_preserves_literal_prompt(tmp_path):
     cmd = command(args, "/bin/codex", client, "codex-bound", task, "mock", tmp_path / "final.txt")
     config = tomllib.loads(cmd[cmd.index("-c") + 1])["mcp_servers"]["governor"]
     assert config["required"] is True
+    assert config["default_tools_approval_mode"] == "approve"
     assert config["args"][-1] == "codex-bound"
     assert config["command"] == sys.executable
     assert task in cmd[-1]
