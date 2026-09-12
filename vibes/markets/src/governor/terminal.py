@@ -409,7 +409,10 @@ class GovernorTerminal(App):
                     "Respect refusals and uncertain holds. Assess discovered vendors yourself. "
                     "Keep this session open across prompts. Only call finish_session when the user "
                     "explicitly asks to finish the entire session. get_session "
-                    "supplies prior evidence."
+                    "supplies prior evidence. "
+                    "For longer replies, use short paragraphs and Markdown headings. "
+                    "Bold a few key takeaways; use inline code for commands and paths. "
+                    "Keep emphasis selective so long responses are easy to scan."
                 ),
             }
             for flag in ("model", "sandbox"):

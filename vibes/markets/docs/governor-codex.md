@@ -44,7 +44,9 @@ call or Google credential is required by this path.
 ## Terminal controls
 
 - **Enter** sends your prompt; **Up/Down** recalls earlier prompts.
-- Replies stream as Codex writes. Expand a tool row to inspect its arguments,
+- Replies stream as Codex writes, with bold white headings, orange emphasis and
+  light green inline code and notes. Markdown paragraph spacing keeps longer
+  explanations readable. Expand a tool row to inspect its arguments,
   command output, result or error. The budget refreshes every 1.5 seconds.
 - **Esc** or `/stop` interrupts the current Codex turn. Existing payment holds stay.
 - **Ctrl+O** or `/app` opens the same session in the web app.
