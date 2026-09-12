@@ -25,6 +25,7 @@ def parser():
         dest="headless",
         help="run one task without the interactive TUI",
     )
+    root.add_argument("--native", action="store_true", help="use the original Codex terminal UI")
     root.add_argument("--session", help="reuse an existing open Codex-owned Governor budget")
     root.add_argument("--mode", choices=("mock", "solana-devnet"), default=None)
     root.add_argument("--url", default=os.environ.get("GOVERNOR_APP_URL", "http://127.0.0.1:8787"))
@@ -112,6 +113,12 @@ def launch(args):
     task = args.task_file.read_text() if args.task_file else args.task
     if task is not None and not 1 <= len(task.strip()) <= 20000:
         raise AppError("Task must contain 1–20000 characters")
+    if args.native and args.headless:
+        raise AppError("Use --native or --exec, not both")
+    if not args.headless and not args.native:
+        from governor.terminal import run_terminal
+
+        return run_terminal(args, executable, task)
     client = AppClient(args.url)
     state = client.request("/api/state")
     if state.get("plugin_api") != 1:

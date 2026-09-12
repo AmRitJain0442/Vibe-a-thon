@@ -1,0 +1,636 @@
+"""Governor's interactive terminal, backed by one persistent Codex conversation."""
+
+import asyncio
+import json
+import os
+import uuid
+import webbrowser
+from decimal import Decimal
+
+from platformdirs import user_state_path
+from rich.text import Text
+from textual import work
+from textual.app import App, ComposeResult
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen
+from textual.widgets import Button, Collapsible, Footer, Input, Static
+
+from governor.app_client import AppClient, AppError
+from governor.codex_launcher import mcp_configuration
+from governor.codex_transport import CodexTransport
+from governor.plugin_sessions import identifier
+
+
+def dollars(value):
+    return f"${Decimal(str(value)) / 1_000_000:.6f}"
+
+
+class Prompt(Input):
+    BINDINGS = [("up", "previous", "Previous prompt"), ("down", "next", "Next prompt")]
+
+    def __init__(self):
+        super().__init__(placeholder="Ask Codex anything…", id="prompt", max_length=20000)
+        self.history = []
+        self.position = 0
+        self.draft = ""
+
+    def action_previous(self):
+        if self.history and self.position > 0:
+            if self.position == len(self.history):
+                self.draft = self.value
+            self.position -= 1
+            self.value = self.history[self.position]
+            self.cursor_position = len(self.value)
+
+    def action_next(self):
+        if self.position < len(self.history):
+            self.position += 1
+            self.value = (
+                self.history[self.position] if self.position < len(self.history) else self.draft
+            )
+            self.cursor_position = len(self.value)
+
+    def remember(self, value):
+        self.history.append(value)
+        self.position = len(self.history)
+        self.draft = ""
+        self.value = ""
+
+
+class Decision(ModalScreen):
+    """An explicit per-request response; never grants session-wide command approval."""
+
+    BINDINGS = [("escape", "deny", "Cancel")]
+    DEFAULT_CSS = """
+    Decision { align: center middle; background: $background 75%; }
+    #decision { width: 85%; max-width: 100; height: auto; max-height: 90%;
+        border: thick #ff8a3d; padding: 1 2; background: #181818; }
+    #decision-body { height: auto; max-height: 24; }
+    #decision-actions { height: 3; margin-top: 1; }
+    #decision-actions Button { margin-right: 2; }
+    .answer { margin-top: 1; }
+    """
+
+    def __init__(self, message):
+        super().__init__()
+        self.message = message
+        self.questions = message.get("params", {}).get("questions", [])
+
+    def compose(self):
+        with Vertical(id="decision"):
+            yield Static("CODEX NEEDS YOUR INPUT", classes="orange")
+            with VerticalScroll(id="decision-body"):
+                if self.questions:
+                    for index, question in enumerate(self.questions):
+                        options = question.get("options") or []
+                        labels = "\n".join(
+                            f"• {o['label']}: {o.get('description', '')}" for o in options
+                        )
+                        yield Static(Text(question["question"] + "\n" + labels))
+                        yield Input(
+                            placeholder="Type your answer",
+                            id=f"answer-{index}",
+                            classes="answer",
+                            password=question.get("isSecret", False),
+                        )
+                else:
+                    yield Static(Text(json.dumps(self.message.get("params", {}), indent=2)))
+            with Horizontal(id="decision-actions"):
+                yield Button(
+                    "Send answers" if self.questions else "Allow once",
+                    id="allow",
+                    variant="warning",
+                )
+                yield Button("Cancel" if self.questions else "Deny", id="deny")
+
+    def on_button_pressed(self, event):
+        if event.button.id == "deny":
+            self.action_deny()
+        elif self.questions:
+            values = [
+                self.query_one(f"#answer-{i}", Input).value.strip()
+                for i in range(len(self.questions))
+            ]
+            if not all(values):
+                self.notify("Answer each question before sending.")
+                return
+            self.dismiss(
+                {
+                    "answers": {
+                        q["id"]: {"answers": [value]}
+                        for q, value in zip(self.questions, values, strict=True)
+                    }
+                }
+            )
+        else:
+            self.dismiss({"decision": "accept"})
+
+    def action_deny(self):
+        self.dismiss({"answers": {}} if self.questions else {"decision": "decline"})
+
+
+class GovernorTerminal(App):
+    TITLE = "Governor / Codex"
+    BINDINGS = [
+        ("ctrl+q", "leave", "Quit"),
+        ("escape", "stop", "Stop"),
+        ("ctrl+o", "dashboard", "Open app"),
+        ("ctrl+l", "focus_prompt", "Prompt"),
+    ]
+    CSS = """
+    Screen { background: #101010; color: #efeee9; }
+    #masthead { height: 4; padding: 1 2; border-bottom: solid #35312b; background: #191715; }
+    #brand { width: 1fr; color: #ff8a3d; text-style: bold; }
+    #connection { width: auto; color: #aaa59d; }
+    #workspace { height: 1fr; }
+    #conversation { width: 1fr; padding: 1 2; scrollbar-color: #815337; }
+    #welcome { padding: 1 2; margin-bottom: 1; border-left: thick #ff8a3d; background: #1c1916; }
+    #sidebar { width: 31; padding: 1 2; border-left: solid #35312b; background: #151413; }
+    #budget { height: auto; }
+    #session { margin-top: 2; height: auto; color: #a8a39a; }
+    #budget-note { color: #847f78; margin-top: 2; height: auto; }
+    .message { height: auto; padding: 1 2; margin-bottom: 1; }
+    .user { background: #26201a; border-left: thick #ff8a3d; }
+    .assistant { border-left: solid #51483d; }
+    .notice { color: #aaa59d; padding: 0 2; margin-bottom: 1; height: auto; }
+    .orange { color: #ff8a3d; text-style: bold; }
+    .tool { margin-bottom: 1; padding: 0 1; border: solid #39332b; background: #171614; }
+    .tool Static { height: auto; max-height: 18; overflow-y: auto; }
+    #status { height: 1; padding: 0 3; color: #ff8a3d; }
+    #composer { height: 5; padding: 0 2; }
+    #prompt { width: 1fr; border: tall #ff8a3d; background: #211c17; }
+    #send { min-width: 10; width: 10; margin-left: 1; background: #ff8a3d; color: #101010; }
+    Footer { background: #191715; }
+    FooterKey > .footer-key--key { background: #30271e; color: #ff8a3d; }
+    .compact #sidebar { display: none; }
+    """
+
+    def __init__(
+        self, args, executable, initial_task=None, *, client=None, transport_factory=CodexTransport
+    ):
+        super().__init__()
+        self.args, self.executable, self.initial_task = args, executable, initial_task
+        self.client = client or AppClient(args.url)
+        self.transport_factory = transport_factory
+        self.sid = identifier(args.session) if args.session else "codex-" + uuid.uuid4().hex[:16]
+        self.mode = args.mode or "mock"
+        self.created = False
+        self.payload = None
+        self.transport = None
+        self.thread_id = None
+        self.turn_id = None
+        self.busy = False
+        self.closed_session = False
+        self.polling = False
+        self.messages = {}
+        self.tools = {}
+        self.last_answer = ""
+        self.report = None
+        self.exiting = False
+        self.request_lock = asyncio.Lock()
+        self.state_file = user_state_path("governor") / "threads" / f"{self.sid}.json"
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="masthead"):
+            yield Static("▟ GOVERNOR   /   CODEX", id="brand")
+            yield Static("READY TO CONNECT", id="connection")
+        with Horizontal(id="workspace"):
+            with VerticalScroll(id="conversation"):
+                yield Static(
+                    Text(
+                        "YOUR AGENT. YOUR BUDGET.\n\n"
+                        "Type a prompt to start. Codex can explore your workspace, "
+                        "discover vendors,\n"
+                        "and use Governor's payment tools within your spending cap.\n\n"
+                        "Enter sends  ·  ↑ ↓ prompt history  ·  /help for commands"
+                    ),
+                    id="welcome",
+                )
+            with Vertical(id="sidebar"):
+                yield Static("BUDGET\n\nStarts with your first prompt", id="budget")
+                yield Static(
+                    Text(
+                        f"SESSION\n{self.sid}\n\nMODE\n{self.mode}\n\nWORKSPACE\n{self.args.cwd.resolve()}"
+                    ),
+                    id="session",
+                )
+                yield Static(
+                    "USDC service budget only.\nCodex inference uses your\nexisting Codex account.",
+                    id="budget-note",
+                )
+        yield Static("○ Ready — type a prompt below", id="status")
+        with Horizontal(id="composer"):
+            yield Prompt()
+            yield Button("Send ↵", id="send")
+        yield Footer()
+
+    def on_mount(self):
+        self.query_one(Prompt).focus()
+        self.set_interval(1.5, self.poll_budget)
+        if self.initial_task:
+            self.submit(self.initial_task)
+        elif self.args.session:
+            self.attach()
+
+    def on_resize(self, event):
+        self.screen.set_class(event.size.width < 100, "compact")
+
+    def status(self, text):
+        self.query_one("#status", Static).update(Text(text))
+
+    async def add(self, text, kind="notice"):
+        widget = Static(Text(text), classes="message " + kind if kind != "notice" else "notice")
+        pane = self.query_one("#conversation", VerticalScroll)
+        follow = pane.is_vertical_scroll_end
+        await pane.mount(widget)
+        if follow:
+            pane.scroll_end(animate=False)
+        return widget
+
+    def on_input_submitted(self, event: Input.Submitted):
+        if event.input.id == "prompt":
+            self.submit(event.value)
+
+    def on_button_pressed(self, event):
+        if event.button.id == "send":
+            self.submit(self.query_one(Prompt).value)
+
+    def submit(self, text):
+        text = text.strip()
+        if not text:
+            return
+        if text == "/quit":
+            self.action_leave()
+            return
+        if text == "/stop":
+            self.action_stop()
+            return
+        if text == "/app":
+            self.action_dashboard()
+            self.query_one(Prompt).value = ""
+            return
+        if self.busy:
+            self.notify("Codex is working. Esc stops the current turn; your draft stays here.")
+            return
+        self.query_one(Prompt).remember(text)
+        if text in ("/help", "/budget"):
+            self.show_info(text)
+        elif text == "/finish":
+            self.finish()
+        elif text.startswith("/"):
+            self.notify("Unknown command. Type /help.")
+        elif self.closed_session:
+            self.notify("This session is finished. Launch governor-codex for a new session.")
+        else:
+            self.busy = True
+            self.run_prompt(text)
+
+    @work
+    async def show_info(self, command):
+        if command == "/budget":
+            await self.poll_budget()
+            await self.add(json.dumps((self.report or {}).get("budget", {}), indent=2))
+        else:
+            await self.add(
+                "/budget  Show ledger totals     /app  Open dashboard\n"
+                "/stop  Interrupt Codex          /finish  Save answer and close budget\n"
+                "/quit  Leave session open       ↑ ↓  Recall prompts\n"
+                "Tool rows expand to show arguments, output and errors."
+            )
+
+    async def ensure_session(self, task):
+        if self.created:
+            return
+        state = await asyncio.to_thread(self.client.request, "/api/state")
+        if state.get("plugin_api") != 1:
+            raise AppError("Restart governor-web with the current Governor version.")
+        if self.args.session:
+            report = await asyncio.to_thread(self.client.report, self.sid)
+            if report.get("client", {}).get("runner") != "codex":
+                raise AppError("Only Codex-owned Governor sessions can be attached.")
+            if report["status"] in ("COMPLETED", "STOPPED", "RUNNING"):
+                raise AppError(
+                    "Session is finished or executing a tool; it cannot be attached now."
+                )
+            self.mode = report["budget"]["payment_mode"]
+            if self.args.mode is not None and self.args.mode != self.mode:
+                raise AppError("Cannot change the existing session's payment mode.")
+            if self.args.task_list:
+                raise AppError("An attached session cannot replace its task plan.")
+        else:
+            # Keep both identity and payload across lost responses; never allocate a fresh cap.
+            if self.payload is None:
+                self.payload = {"session_id": self.sid, "task": task, "mode": self.mode}
+                if self.args.task_list:
+                    self.payload["task_list"] = json.loads(self.args.task_list.read_text())
+            await asyncio.to_thread(self.client.request, "/api/plugin/runs", self.payload)
+        self.created = True
+        self.query_one("#session", Static).update(
+            Text(
+                f"SESSION\n{self.sid}\n\nMODE\n{self.mode}\n\nWORKSPACE\n{self.args.cwd.resolve()}"
+            )
+        )
+        await self.add("Session connected · " + self.client.link(self.sid))
+        await self.poll_budget()
+
+    @work
+    async def attach(self):
+        try:
+            await self.ensure_session("")
+        except (ValueError, OSError) as exc:
+            await self.add(str(exc))
+
+    async def connect_codex(self):
+        if self.transport:
+            return
+        argv = [
+            self.executable,
+            "app-server",
+            "-c",
+            mcp_configuration(self.args, self.client, self.sid),
+        ]
+        if self.args.profile:
+            argv.extend(["-c", "profile=" + json.dumps(self.args.profile)])
+        transport = self.transport_factory(argv, self.args.cwd.resolve(), self.on_codex_event)
+        self.transport = transport
+        try:
+            await transport.start()
+            params = {
+                "cwd": str(self.args.cwd.resolve()),
+                "developerInstructions": (
+                    "You are running inside Governor. You are the reasoning agent; do "
+                    "not invoke Gemini. "
+                    f"The Governor budget session is {self.sid}, payment mode {self.mode}. "
+                    "Use the preloaded governor MCP tools for budget, Bazaar "
+                    "discovery and purchases. "
+                    "Call get_budget and list_services at the start, with stable call IDs. "
+                    "Do not create another budget session, reset caps, or send funds "
+                    "outside the gate. "
+                    "Respect refusals and uncertain holds. Assess discovered vendors yourself. "
+                    "Keep this session open across prompts. Only call finish_session when the user "
+                    "explicitly asks to finish the entire session. get_session "
+                    "supplies prior evidence."
+                ),
+            }
+            for flag in ("model", "sandbox"):
+                if value := getattr(self.args, flag):
+                    params[flag] = value
+            method = "thread/start"
+            if self.state_file.is_file():
+                saved = json.loads(self.state_file.read_text())
+                if saved["origin"] != self.client.origin or saved["cwd"] != params["cwd"]:
+                    raise AppError("Saved Codex conversation belongs to another app or workspace.")
+                params["threadId"] = saved["thread_id"]
+                method = "thread/resume"
+            result = await transport.request(method, params)
+            self.thread_id = result["thread"]["id"]
+            self.state_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            temp = self.state_file.with_suffix(".tmp")
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as file:
+                json.dump(
+                    {
+                        "origin": self.client.origin,
+                        "cwd": params["cwd"],
+                        "thread_id": self.thread_id,
+                    },
+                    file,
+                )
+            temp.replace(self.state_file)
+            self.query_one("#connection", Static).update(Text("● " + result.get("model", "CODEX")))
+            if method == "thread/resume":
+                await self.add(
+                    "Resumed the saved Codex conversation with the same Governor budget."
+                )
+        except BaseException:
+            await transport.close()
+            self.transport = None
+            raise
+
+    @work
+    async def run_prompt(self, text):
+        await self.add("YOU\n" + text, "user")
+        self.status("◌ Connecting Codex…")
+        try:
+            await self.ensure_session(text)
+            await self.connect_codex()
+            self.status("◌ Codex is working · Esc to stop")
+            result = await self.transport.request(
+                "turn/start",
+                {
+                    "threadId": self.thread_id,
+                    "input": [{"type": "text", "text": text}],
+                },
+            )
+            # turn/completed may arrive before the response; do not re-mark a finished turn busy.
+            if self.busy:
+                self.turn_id = result.get("turn", {}).get("id", self.turn_id)
+        except (ValueError, OSError, TimeoutError) as exc:
+            self.busy = False
+            self.status("○ Needs attention · your session and budget are preserved")
+            await self.add(str(exc))
+
+    async def on_codex_event(self, event):
+        method, params = event.get("method", ""), event.get("params", {})
+        if "id" in event:
+            self.handle_request(event)
+            return
+        if method == "turn/started":
+            self.turn_id = params["turn"]["id"]
+        elif method == "item/agentMessage/delta":
+            key = params.get("itemId", "message")
+            if key not in self.messages:
+                self.messages[key] = [await self.add("CODEX\n", "assistant"), ""]
+            entry = self.messages[key]
+            entry[1] += params.get("delta", "")
+            entry[0].update(Text("CODEX\n" + entry[1]))
+            pane = self.query_one("#conversation", VerticalScroll)
+            if pane.is_vertical_scroll_end:
+                pane.scroll_end(animate=False)
+        elif method in ("item/started", "item/completed"):
+            item = params.get("item", {})
+            kind, key = item.get("type"), item.get("id")
+            if kind == "agentMessage" and method == "item/completed":
+                answer = item.get("text", "")
+                self.last_answer = answer or self.last_answer
+                if key not in self.messages:
+                    self.messages[key] = [await self.add("CODEX\n" + answer, "assistant"), answer]
+            elif kind in (
+                "mcpToolCall",
+                "commandExecution",
+                "fileChange",
+                "webSearch",
+                "dynamicToolCall",
+            ):
+                done = method == "item/completed"
+                name = item.get("tool") or item.get("command") or kind
+                title = f"{'✓' if done else '◌'} {name}"[:160]
+                detail = json.dumps(item, indent=2, ensure_ascii=False)[:16000]
+                if key not in self.tools:
+                    body = Static(Text(detail))
+                    box = Collapsible(body, title=title, collapsed=True, classes="tool")
+                    await self.query_one("#conversation").mount(box)
+                    self.tools[key] = (box, body)
+                else:
+                    box, body = self.tools[key]
+                    box.title = title
+                    body.update(Text(detail))
+                self.status(f"{'Finished' if done else 'Running'} · {name}"[:200])
+        elif method == "item/commandExecution/outputDelta":
+            if row := self.tools.get(params.get("itemId")):
+                row[1].update(Text(str(row[1].render())[-12000:] + params.get("delta", "")))
+        elif method == "item/mcpToolCall/progress":
+            self.status(params.get("message", "Tool working…"))
+        elif method == "turn/completed":
+            turn = params.get("turn", {})
+            self.busy = False
+            self.turn_id = None
+            self.status("○ " + turn.get("status", "completed").capitalize() + " · type a follow-up")
+            if turn.get("error"):
+                await self.add("Codex: " + json.dumps(turn["error"]))
+            self.poll_budget_worker()
+        elif method == "error":
+            await self.add("Codex: " + params.get("error", {}).get("message", "An error occurred"))
+        elif method == "governor/disconnected":
+            self.busy = False
+            self.turn_id = None
+            self.query_one("#connection", Static).update("DISCONNECTED")
+            self.status("○ Codex disconnected · quit and reopen with --session " + self.sid)
+
+    @work
+    async def handle_request(self, event):
+        async with self.request_lock:
+            method = event["method"]
+            self.status("◈ Waiting for your input")
+            if method in (
+                "item/commandExecution/requestApproval",
+                "item/fileChange/requestApproval",
+                "item/tool/requestUserInput",
+            ):
+                result = await self.push_screen_wait(Decision(event))
+                await self.transport.reply(event["id"], result)
+            elif method == "item/permissions/requestApproval":
+                # Extra permission profiles cannot be meaningfully reviewed by the command modal.
+                await self.transport.reply(event["id"], {"permissions": {}, "scope": "turn"})
+                await self.add(
+                    "Codex requested an extra permission profile. No extra "
+                    "permissions granted; use --native to review it in Codex."
+                )
+            else:
+                await self.transport.reply(
+                    event["id"],
+                    error={"code": -32601, "message": "Request unsupported by Governor terminal"},
+                )
+                await self.add(
+                    "Unsupported Codex request: " + method + ". Use --native for this interaction."
+                )
+            self.status("◌ Codex is working · Esc to stop" if self.busy else "○ Ready")
+
+    @work
+    async def poll_budget_worker(self):
+        await self.poll_budget()
+
+    async def poll_budget(self):
+        if not self.created or self.polling:
+            return
+        self.polling = True
+        try:
+            self.report = await asyncio.to_thread(self.client.report, self.sid)
+            budget = self.report["budget"]
+            available, cap = int(budget["available"]), int(budget["session_cap"])
+            blocks = max(0, min(20, int(20 * available / cap))) if cap else 0
+            self.query_one("#budget", Static).update(
+                Text(
+                    "SERVICE BUDGET\n\n"
+                    + dollars(available)
+                    + " available\n"
+                    + "━" * blocks
+                    + "─" * (20 - blocks)
+                    + f"\n\nCap       {dollars(cap)}\nSpent     {dollars(budget['settled'])}"
+                    + f"\nHeld      {dollars(budget['held'])}\n\n"
+                    + f"Tools     {len(self.report.get('tool_results', []))}\n"
+                    + f"Runway    {self.report.get('runway', {}).get('state', 'UNKNOWN')}"
+                )
+            )
+            self.closed_session = self.report["status"] in ("COMPLETED", "STOPPED")
+            if self.closed_session and not self.busy:
+                self.status("■ Session finished · /app to review, Ctrl+Q to quit")
+        except (ValueError, OSError):
+            self.query_one("#budget", Static).update(
+                "BUDGET OFFLINE\n\nReconnect governor-web.\nExisting spend and "
+                "holds\nremain in the ledger."
+            )
+        finally:
+            self.polling = False
+
+    @work
+    async def finish(self):
+        if not self.created or not self.last_answer:
+            self.notify("Complete a Codex turn before finishing the session.")
+            return
+        self.busy = True
+        try:
+            await asyncio.to_thread(
+                self.client.request,
+                "/api/plugin/finish",
+                {"session_id": self.sid, "answer": self.last_answer[:20000], "status": "COMPLETED"},
+            )
+            self.closed_session = True
+            await self.add("Final answer saved to " + self.client.link(self.sid))
+            self.status("■ Session finished · Ctrl+Q to quit")
+        except (ValueError, OSError) as exc:
+            await self.add(str(exc))
+        finally:
+            self.busy = False
+
+    @work
+    async def action_stop(self):
+        if self.transport and self.turn_id:
+            try:
+                await self.transport.request(
+                    "turn/interrupt", {"threadId": self.thread_id, "turnId": self.turn_id}
+                )
+                self.status("◌ Stopping Codex · payment holds are preserved")
+            except (ValueError, OSError, TimeoutError) as exc:
+                await self.add(str(exc))
+        elif self.busy:
+            self.notify("Codex is connecting. Ctrl+Q closes the terminal.")
+
+    def action_focus_prompt(self):
+        self.query_one(Prompt).focus()
+
+    def action_dashboard(self):
+        webbrowser.open(self.client.link(self.sid) if self.created else self.client.origin)
+
+    @work
+    async def action_leave(self):
+        if self.exiting:
+            return
+        self.exiting = True
+        if self.transport:
+            if self.turn_id:
+                try:
+                    await asyncio.wait_for(
+                        self.transport.request(
+                            "turn/interrupt", {"threadId": self.thread_id, "turnId": self.turn_id}
+                        ),
+                        3,
+                    )
+                except (ValueError, OSError, TimeoutError):
+                    pass
+            await self.transport.close()
+        self.exit()
+
+    async def on_unmount(self):
+        if self.transport:
+            await self.transport.close()
+
+
+def run_terminal(args, executable, task):
+    app = GovernorTerminal(args, executable, task)
+    app.run()
+    if app.created:
+        print(f"Governor session: {app.client.link(app.sid)}")
+        if not app.closed_session:
+            print(f"Resume: governor-codex --session {app.sid} --cwd {str(args.cwd.resolve())!r}")
+    return 0
