@@ -1,5 +1,9 @@
 # Governor CLI plugin for Codex
 
+To launch Codex with native Governor tools preloaded, use
+[`governor-codex`](governor-codex.md). The standalone plugin described below remains
+available for existing Codex threads that call Governor through its Python CLI.
+
 Codex remains the reasoning agent. It opens a Governor session and calls the same
 budget, runway, service-purchase and local-summary tools used by the runtime.
 Governor records each request, result, refusal and payment in its app ledger.
