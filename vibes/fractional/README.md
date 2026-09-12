@@ -1,10 +1,10 @@
 # Fractionalisation / tokenisation
 
-**Branch:** `02-fractional`  
+**Branch:** `vibe/fractional`  
 **Brief:** [../../briefs/02-fractional-tokenisation.md](../../briefs/02-fractional-tokenisation.md)
 
 Devnet only. Mint → transfer → coupon or retire. Put it here.
 
 ```bash
-git checkout 02-fractional
+git checkout vibe/fractional
 ```
