@@ -7,9 +7,12 @@ deterministic budget gate, and fall back to a local excerpt. Based on the
 
 **Implemented:** Gemini tool calling, strict tool inputs, run limits, SQLite
 reservations, restart-safe purchase identities, an offline scenario, and audit exports.
-**Payment adapter:** simulated. No wallet keys, x402 HTTP handshake, cryptographic
-payment signatures, on-chain balance reads, or blockchain settlement are implemented yet.
+**Payment adapter:** simulated. The separate operator wallet CLI can create a
+Solana Devnet wallet, request SOL, and read actual SOL/USDC balances. Agent purchases
+do not yet use that wallet, an x402 HTTP handshake, or blockchain settlement.
 `run` uses real Gemini inference; `demo` uses a scripted model. Both use simulated payments.
+
+For the active Solana Devnet configuration, see [wallet and faucet setup](docs/solana-devnet.md).
 
 ## Setup
 
