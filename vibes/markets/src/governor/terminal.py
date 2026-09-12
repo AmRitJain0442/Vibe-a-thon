@@ -65,7 +65,7 @@ class Conversation(VerticalScroll):
 
     def follow(self):
         if self.following:
-            self.call_after_refresh(self.scroll_end, animate=False)
+            self.call_after_refresh(self.scroll_end, animate=False, immediate=True)
 
     def on_mouse_scroll_up(self):
         self.following = False
