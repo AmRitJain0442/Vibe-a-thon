@@ -11,6 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 MAX_ATOMIC = 2**63 - 1  # SQLite's signed integer range.
 
 
+class ConfigurationError(ValueError):
+    """A configuration message that is safe to show without exposing input values."""
+
+
 def atomic(value: str) -> int:
     """Parse canonical, unsigned atomic units without accepting floats or booleans."""
     if not isinstance(value, str) or not re.fullmatch(r"0|[1-9][0-9]{0,18}", value):
@@ -52,9 +56,9 @@ class Settings(BaseModel):
 
     def require_credentials(self) -> None:
         if self.backend == "developer" and not self.api_key:
-            raise ValueError("set GEMINI_API_KEY in .env, or use the offline demo command")
+            raise ConfigurationError("set GEMINI_API_KEY in .env, or use the offline demo command")
         if self.backend == "vertex" and not self.project:
-            raise ValueError(
+            raise ConfigurationError(
                 "set GOOGLE_CLOUD_PROJECT and configure Application Default Credentials"
             )
 

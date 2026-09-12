@@ -16,7 +16,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from governor.agent import Agent
-from governor.config import Settings
+from governor.config import ConfigurationError, Settings
 from governor.demo import TASK, DemoModel
 from governor.gemini import GeminiModel
 from governor.ledger import Ledger, LedgerError
@@ -176,6 +176,9 @@ def main() -> int:
         return 130
     except LedgerError as exc:
         print(f"Ledger refused the operation: {exc}", file=sys.stderr)
+        return 2
+    except ConfigurationError as exc:
+        print(f"Configuration: {exc}", file=sys.stderr)
         return 2
     except (ValueError, sqlite3.Error, OSError):
         print(

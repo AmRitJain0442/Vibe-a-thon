@@ -27,13 +27,21 @@ class Ledger:
         self.path = path
         self.policy = policy
         self.policy_hash = hashlib.sha256(policy.model_dump_json().encode()).hexdigest()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = path.exists()
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self._transaction() as db:
             if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise LedgerError("ledger integrity check failed")
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version not in (0, 1):
                 raise LedgerError("unsupported ledger schema")
+            if existing:
+                tables = {
+                    row[0]
+                    for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                }
+                if version != 1 or not {"sessions", "attempts", "events"} <= tables:
+                    raise LedgerError("existing ledger is incomplete; refusing to recreate state")
             db.execute("""CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY, task TEXT NOT NULL, policy_hash TEXT NOT NULL)""")
             db.execute("""CREATE TABLE IF NOT EXISTS attempts (
@@ -47,6 +55,7 @@ class Ledger:
                 seq INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
                 time TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL)""")
             db.execute("PRAGMA user_version = 1")
+        path.chmod(0o600)
 
     @contextmanager
     def _transaction(self):

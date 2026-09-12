@@ -1,3 +1,4 @@
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -77,3 +78,18 @@ def test_per_call_denials_do_not_hold_money(ledger):
     denial = ledger.reserve("session", "a", "summary", "3001")
     assert denial.result["code"] == "PER_CALL_CAP_EXCEEDED"
     assert ledger.snapshot("session")["held"] == "0"
+
+
+def test_deleted_accounting_table_is_not_silently_recreated(ledger):
+    ledger.reserve("session", "a", "summary", "2000")
+    with sqlite3.connect(ledger.path) as db:
+        db.execute("DROP TABLE attempts")
+    with pytest.raises(LedgerError, match="incomplete"):
+        Ledger(ledger.path, ledger.policy)
+
+
+def test_empty_existing_file_is_not_treated_as_a_new_ledger(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    path.touch()
+    with pytest.raises(LedgerError, match="incomplete"):
+        Ledger(path, BudgetPolicy())
