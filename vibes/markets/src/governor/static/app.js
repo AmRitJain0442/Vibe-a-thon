@@ -1,0 +1,305 @@
+'use strict';
+
+const $ = (selector, root = document) => root.querySelector(selector);
+const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const paths = {
+  grid: '<path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM15 15h6v6h-6z"/>',
+  terminal: '<path d="M3 4h18v16H3zM7 9l3 3-3 3M13 15h4"/>',
+  blocks: '<path d="M9 3h6v6H9zM3 15h6v6H3zM15 15h6v6h-6zM12 9v3M6 15v-3h12v3"/>',
+  wallet: '<path d="M3 5h16v4M3 5v15h18V9H3m13 4h5v4h-5z"/>',
+  shield: '<path d="M12 3l8 3v7l-3 5-5 3-5-3-3-5V6zM8 12l3 3 5-6"/>',
+  plus: '<path d="M12 4v16M4 12h16"/>',
+  arrow: '<path d="M6 18 18 6M6 6h12v12"/>',
+  sun: '<path d="M8 8h8v8H8zM12 1v3M12 20v3M1 12h3M20 12h3M4 4l2 2M18 18l2 2M4 20l2-2M18 6l2-2"/>',
+  moon: '<path d="M20 14A9 9 0 0 1 10 3 9 9 0 1 0 20 14Z"/>',
+  clock: '<path d="M7 3h10l4 4v10l-4 4H7l-4-4V7zM12 7v6h5"/>',
+  download: '<path d="M12 3v12M7 10l5 5 5-5M4 17v4h16v-4"/>',
+  refresh: '<path d="M20 9V3l-3 3a8 8 0 0 0-13 5M4 15v6l3-3a8 8 0 0 0 13-5M20 9h-6M4 15h6"/>',
+  check: '<path d="m5 12 5 5L20 7"/>',
+  stop: '<path d="M7 3h10l4 4v10l-4 4H7l-4-4V7zM8 8l8 8M16 8l-8 8"/>',
+  chevron: '<path d="m9 5 7 7-7 7"/>',
+  copy: '<path d="M8 8h13v13H8zM16 8V3H3v13h5"/>',
+  code: '<path d="m7 6-5 6 5 6M17 6l5 6-5 6M14 3l-4 18"/>',
+};
+const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.grid}</svg>`;
+const esc = (value = '') => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
+const storage = {
+  get(key) { try { return localStorage.getItem(key); } catch { return null; } },
+  set(key, value) { try { localStorage.setItem(key, value); } catch { /* Private mode. */ } },
+};
+function money(value = '0') {
+  const units = BigInt(value);
+  const decimals = (units % 1000000n).toString().padStart(6, '0').replace(/0+$/, '').padEnd(3, '0');
+  return `${units / 1000000n}.${decimals}`;
+}
+function time(value) {
+  return value ? new Date(value).toLocaleTimeString([], {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '--:--:--';
+}
+function date(value) {
+  return value ? new Date(value).toLocaleDateString([], {month:'short', day:'2-digit'}) : 'Local';
+}
+function badge(status = 'READY') {
+  const normalized = String(status).toLowerCase().replace(/[^a-z_]/g, '');
+  return `<span class="status-badge ${normalized}">${status === 'RUNNING' ? '<span class="square-dot"></span>' : ''}${esc(status.replaceAll('_', ' '))}</span>`;
+}
+
+let state = null;
+let report = null;
+let selected = storage.get('governor.session');
+let wallet = null;
+let walletLoading = false;
+let filter = 'all';
+let search = '';
+let refreshing = false;
+let submitting = false;
+let lastRender = '';
+let connected = false;
+let toastTimer;
+const labels = {overview:'Overview', sessions:'Agent sessions', services:'Services', wallet:'Wallet', policy:'Spending policy'};
+const titles = {overview:'Your agents. Your rules.', sessions:'Every mission, accounted for.', services:'Tools for the task.', wallet:'Your devnet vault.', policy:'Set the boundaries.'};
+function route() {
+  const [view, id] = location.hash.slice(1).split('/');
+  return {view: Object.hasOwn(labels, view) ? view : 'overview', id: id || null};
+}
+function currentBudget() {
+  return report?.budget || {available: state?.policy.session_cap || '0', settled:'0', held:'0', session_cap:state?.policy.session_cap || '0', per_call_cap:state?.policy.per_call_cap || '0'};
+}
+function disabled() { return state?.active_session || submitting || !state || !connected ? 'disabled' : ''; }
+function toast(message) {
+  clearTimeout(toastTimer);
+  $('#toast').textContent = message;
+  $('#toast').hidden = false;
+  toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 4500);
+}
+async function api(path, options = {}) {
+  const response = await fetch(path, {...options, signal:AbortSignal.timeout(35000), headers:{...options.headers}});
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'The request could not be completed.');
+  return data;
+}
+function setTheme(theme) {
+  theme = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = theme;
+  storage.set('governor.theme', theme);
+  $$('[data-theme-choice]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.themeChoice === theme)));
+  $('meta[name="theme-color"]').content = theme === 'dark' ? '#141613' : '#f5f4ef';
+}
+function sessionPicker() {
+  const sessions = state.sessions.filter(s => s.compatible);
+  if (!sessions.length) return '<span class="fine-print">NO SESSION YET</span>';
+  return `<div class="session-select"><label for="session-select">SESSION</label><select id="session-select" aria-label="Selected session">${sessions.map(s => `<option value="${esc(s.session_id)}" ${s.session_id === selected ? 'selected' : ''}>${esc(s.session_id)}</option>`).join('')}</select></div>`;
+}
+function stats() {
+  const b = currentBudget();
+  const cap = BigInt(b.session_cap);
+  const settledBlocks = cap ? Number(BigInt(b.settled) * 20n / cap) : 0;
+  const heldBlocks = cap ? Number(BigInt(b.held) * 20n / cap) : 0;
+  const denied = report?.events.filter(e => e.kind === 'DENIED' || (e.kind === 'PAYMENT_REFUSED')).length || 0;
+  return `<div class="stat-grid">
+    <article class="stat-card highlight"><div class="stat-top">AVAILABLE BUDGET ${icon('wallet')}</div><div class="stat-value">${money(b.available)}<small>USDC</small></div><div class="stat-caption">of ${money(b.session_cap)} USDC session cap</div><div class="meter" aria-label="${money(b.settled)} settled, ${money(b.held)} held">${Array.from({length:20},(_,i)=>`<i class="${i < settledBlocks ? 'filled' : i < settledBlocks + heldBlocks ? 'held' : ''}"></i>`).join('')}</div></article>
+    <article class="stat-card"><div class="stat-top">SETTLED SPEND ${icon('arrow')}</div><div class="stat-value">${money(b.settled)}<small>USDC</small></div><div class="stat-caption">${report?.attempts.filter(a=>a.status === 'SETTLED').length || 0} simulated payments settled</div></article>
+    <article class="stat-card"><div class="stat-top">FUNDS ON HOLD ${icon('clock')}</div><div class="stat-value">${money(b.held)}<small>USDC</small></div><div class="stat-caption">${BigInt(b.held) ? 'Reserved until settlement is known' : 'No outstanding reservations'}</div></article>
+    <article class="stat-card"><div class="stat-top">PAYMENTS BLOCKED ${icon('shield')}</div><div class="stat-value">${String(denied).padStart(2,'0')}<small>REFUSED</small></div><div class="stat-caption">Before payment authorization</div></article>
+  </div>`;
+}
+function overview() {
+  return `<section class="hero" aria-labelledby="hero-title"><span class="corner tl" aria-hidden="true">+</span><span class="corner tr" aria-hidden="true">+</span><span class="corner bl" aria-hidden="true">+</span>
+    <div class="hero-copy"><div class="hero-label"><span class="square-dot"></span> AUTONOMY, WITH A HARD LIMIT.</div><h2 id="hero-title">LET IT RUN.<br><span>SET THE LIMIT.</span></h2><p>Give your AI agent room to work.<br>Keep every payment inside your rules.</p><div class="hero-actions"><button class="button button-primary" data-action="launch" ${disabled()}>Launch an agent ${icon('arrow')}</button><button class="text-button" data-action="demo" ${disabled()}>${icon('terminal')} Run sandbox demo</button></div></div>
+    <div class="hero-art"><img src="/assets/guardian.png" width="1254" height="1254" alt="Clay robot guardian holding an orange shield"><span class="art-label">YOUR FRIENDLY BUDGET ENFORCER / 001</span></div></section>
+    <div class="section-top"><h2 class="section-title">Session at a glance <small>SIMULATED USDC</small></h2>${sessionPicker()}</div>
+    ${stats()}
+    <div class="main-grid"><section class="panel"><div class="panel-head"><h2>${icon('terminal')} Agent session</h2>${badge(report?.status || 'READY')}</div>${sessionBody()}<div class="panel-foot"><span>${esc(report ? report.session_id : 'WAITING FOR YOUR FIRST MISSION')}</span><a class="text-button" href="${report ? '#sessions/' + esc(report.session_id) : '#sessions'}">View session ${icon('arrow')}</a></div></section>
+    <section class="panel"><div class="panel-head"><h2>${icon('shield')} Spending guardrails</h2><span class="status-badge">ENFORCED</span></div><div class="policy-preview"><img src="/assets/vault.png" alt="Clay vault with an orange door" width="1254" height="1254"><div><div class="policy-line"><span>Session cap</span><strong>${money(state.policy.session_cap)} USDC</strong></div><div class="policy-line"><span>Per-call cap</span><strong>${money(state.policy.per_call_cap)} USDC</strong></div><div class="policy-line"><span>Payment mode</span><strong class="orange">Sandbox</strong></div></div></div><div class="policy-note">Limits checked before authorization. Every decision recorded.</div><div class="panel-foot"><span>POLICY LIVES OUTSIDE THE MODEL</span><a class="text-button" href="#policy">View policy ${icon('arrow')}</a></div></section></div>
+    ${activity()}`;
+}
+function sessionBody() {
+  if (!report) return '<div class="empty"><strong>Ready when you are<span class="orange">_</span></strong>Launch an agent or try the sandbox demo.<br>Your session and spending decisions will appear here.</div>';
+  const model = report.events.find(e=>e.kind === 'RUN_STARTED')?.data.model || state.model;
+  const finish = [...report.events].reverse().find(e=>e.kind === 'RUN_FINISHED');
+  const calls = finish?.data.tool_calls ?? report.events.filter(e=>e.kind === 'TOOL_RESULT').length;
+  return `<div class="session-body"><div class="session-meta"><span>${esc(model)}</span><span>${date(report.events[0]?.time)} / ${time(report.events[0]?.time)}</span></div><p class="session-task">${esc(report.task)}</p><div class="session-details"><div><span>Tool calls</span>${calls}</div><div><span>Payment adapter</span>Simulated</div><div><span>Model turns</span>${finish?.data.model_turns ?? report.events.filter(e=>e.kind === 'MODEL_RESPONSE').length}</div><div><span>Budget gate</span>Enforced</div></div></div>`;
+}
+function eventMessage(event) {
+  const d = event.data;
+  switch(event.kind) {
+    case 'SESSION_CREATED': return 'New session created. Spending policy attached.';
+    case 'SESSION_RESUMED': return 'Session resumed. Existing holds preserved.';
+    case 'RUN_STARTED': return `Agent started → ${d.model}`;
+    case 'MODEL_RESPONSE': return `Model turn ${d.turn} / ${d.cumulative_usage?.input_tokens || 0} input tokens`;
+    case 'TOOL_RESULT': return `${d.name} → ${d.code}`;
+    case 'RESERVED': return `${money(d.amount)} USDC held → ${d.service}`;
+    case 'AUTHORIZING': return 'Budget gate passed. Simulated authorization starting.';
+    case 'SETTLED': return `${money(d.amount)} USDC settled / ${money(d.budget.available)} remaining`;
+    case 'DENIED': return `${d.service} → ${d.code}${d.amount ? ' / ' + money(d.amount) + ' USDC refused' : ''}`;
+    case 'PAYMENT_REFUSED': return `${d.service || d.service_id || 'Service'} → ${d.code || d.reason || 'Payment refused'}`;
+    case 'RELEASED': return `Unsigned hold released → ${d.reason}`;
+    case 'RUN_FINISHED': return `Session ${d.status.toLowerCase().replaceAll('_',' ')}. Audit saved.`;
+    default: return Object.entries(d).filter(([,v])=>typeof v !== 'object').map(([k,v])=>`${k}: ${v}`).join(' / ') || 'Decision recorded in the audit.';
+  }
+}
+function activity() {
+  let events = report?.events || [];
+  if (filter === 'payments') events = events.filter(e=>['RESERVED','AUTHORIZING','SETTLED','RELEASED','DENIED','PAYMENT_REFUSED','PAYMENT_PENDING','PAYMENT_UNCERTAIN','SETTLEMENT_MISMATCH'].includes(e.kind));
+  if (filter === 'blocked') events = events.filter(e=>e.kind === 'DENIED' || e.kind === 'PAYMENT_REFUSED');
+  return `<section class="activity terminal" aria-label="Agent activity"><div class="terminal-head"><div class="terminal-title"><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span><h2 class="section-title">Activity stream</h2></div><div class="terminal-filter" role="group" aria-label="Activity filter">${['all','payments','blocked'].map(f=>`<button data-filter="${f}" class="${filter === f ? 'active' : ''}" aria-pressed="${filter === f}">${f.toUpperCase()}</button>`).join('')}</div></div><div class="terminal-log" tabindex="0" aria-label="Audit events">${events.length ? events.map(e=>`<div class="log-line"><span class="log-time">${time(e.time)}</span><span class="log-kind ${e.kind.includes('DENIED') || e.kind.includes('REFUSED') || e.kind.includes('ERROR') ? 'warn' : ''}">${esc(e.kind)}</span><span class="log-data">${esc(eventMessage(e))}</span></div>`).join('') : `<div class="terminal-empty"><span class="prompt">governor@local:~$</span> ${report ? 'No matching events.' : 'awaiting mission'}<br>${report ? 'Choose another filter to inspect the session.' : 'Runtime ready. Budget gate initialized.<br>Launch an agent to see its decisions here.'}<br><span class="prompt">&gt;</span> <span class="cursor"></span></div>`}</div><div class="terminal-foot"><span>${report?.status === 'RUNNING' ? '● RUNNING' : '○ IDLE'} / ${events.length} EVENTS</span><span>PAYMENTS SIMULATED · NO ON-CHAIN TRANSACTIONS</span></div></section>`;
+}
+function sessionsView() {
+  const id = route().id;
+  if (id) {
+    if (!report || report.session_id !== id) return '<div class="empty">This session is unavailable. Return to the session list or inspect its policy using the CLI.</div>';
+    return `<div class="toolbar"><a class="text-button" href="#sessions">← All sessions</a><div class="wallet-actions"><a class="button button-outline compact" href="/api/sessions/${esc(id)}?format=json" download>${icon('download')} Audit JSON</a><a class="button button-outline compact" href="/api/sessions/${esc(id)}?format=csv" download>${icon('download')} Expenses CSV</a></div></div><section class="panel"><div class="panel-head"><h2>${esc(id)}</h2>${badge(report.status)}</div>${sessionBody()}</section><div class="section-top"><h2 class="section-title">Session budget <small>SIMULATED USDC</small></h2></div>${stats()}${report.result?.answer ? `<section class="answer"><h2>${icon('terminal')} Agent response</h2><p>${esc(report.result.answer)}</p></section>` : ''}${attempts()}${activity()}`;
+  }
+  const sessions = state.sessions.filter(s=>(s.task + s.session_id).toLowerCase().includes(search.toLowerCase()));
+  return `<p class="subheading">Every task has its own budget, persistent holds, and a record of every decision.</p><div class="toolbar"><input id="session-search" type="search" placeholder="Search sessions…" aria-label="Search sessions" value="${esc(search)}"><span class="fine-print">${state.sessions.length} LOCAL SESSIONS</span></div><div class="session-list">${sessions.length ? sessions.map(s=>`<button class="session-row" data-session="${esc(s.session_id)}" ${s.compatible ? '' : 'disabled'}><span class="row-icon">${icon('terminal')}</span><span><span class="row-title">${esc(s.task)}</span><span class="row-sub">${esc(s.session_id)} ${s.compatible ? '' : '· Policy changed — inspect with CLI'}</span></span><span class="row-date">${date(s.created_at)}</span>${icon('chevron')}</button>`).join('') : `<div class="panel empty"><img src="/assets/guardian.png" alt=""><strong>${search ? 'No matching sessions.' : 'A clean slate.'}</strong>${search ? 'Try another search.' : 'Your next idea starts with a mission.'}${search ? '' : '<br><button class="text-button" data-action="launch">Launch your first agent ↗</button>'}</div>`}</div>`;
+}
+function attempts() {
+  if (!report.attempts.length) return '';
+  return `<section class="panel attempts"><div class="panel-head"><h2>Payment attempts</h2><span class="status-badge">SIMULATED</span></div><table><thead><tr><th>SERVICE</th><th>USDC</th><th>STATUS</th><th>RECEIPT / REASON</th></tr></thead><tbody>${report.attempts.map(a=>`<tr><td>${esc(a.service)}</td><td>${money(a.amount)}</td><td>${badge(a.status)}</td><td>${esc(a.result.code || a.result.receipt || 'Settlement not confirmed')}</td></tr>`).join('')}</tbody></table></section>`;
+}
+function servicesView() {
+  const names = {summary:'Document summary', 'price-change':'The moving price', overpriced:'Over the limit', timeout:'The lost response'};
+  const details = {summary:'A paid extractive summary. Returns the opening sentences of your document.', 'price-change':'An adversarial seller that advertises one price and asks for more at checkout.', overpriced:'A deliberately expensive service for exercising the per-call spending cap.', timeout:'A payment with an unknown settlement outcome. Its funds stay held.'};
+  return `<p class="subheading">An allowlisted sandbox catalog. Try a service to see how your agent handles a purchase, a refusal, or an uncertain settlement.</p><div class="service-grid">${state.services.map(s=>`<article class="service-card"><div class="service-card-top"><span class="service-icon">${icon(s.id === 'summary' ? 'code' : s.id === 'timeout' ? 'clock' : 'shield')}</span><span class="status-badge">${s.id === 'summary' ? 'SANDBOX SERVICE' : 'TEST SCENARIO'}</span></div><h2>${names[s.id] || esc(s.id)}</h2><p>${details[s.id] || esc(s.description)}</p><div class="service-price"><span>${money(s.advertised_amount)} <small>USDC / CALL · ADVERTISED</small></span><button class="text-button" data-service="${esc(s.id)}" ${disabled()}>Try it ${icon('arrow')}</button></div></article>`).join('')}</div><div class="info-banner">All services use the simulated payment adapter. These purchases do not move wallet funds. Gemini model costs are billed separately.</div>`;
+}
+function walletView() {
+  const w = wallet;
+  const verified = w?.status === 'verified';
+  const message = !w ? 'Check your on-chain USDC and SOL balances.' : w.status === 'not_configured' ? 'No local devnet wallet is configured yet.' : w.status === 'unavailable' ? 'The RPC could not verify your balance. Refresh to try again.' : 'Balance verified on Solana Devnet.';
+  return `<p class="subheading">Your development wallet, with live on-chain balances. Agent payments currently run in a separate simulation.</p><div class="wallet-layout"><section class="wallet-card"><img class="wallet-art" src="/assets/vault.png" alt="Clay vault with an orange door"><span class="eyebrow">DEVNET USDC BALANCE</span><div class="wallet-value"><h2>${verified ? money(w.usdc_atomic) : '—'}</h2><span class="muted">USDC / TEST FUNDS</span></div><div class="wallet-address">${esc(w?.address || 'WALLET ADDRESS NOT LOADED')}</div><div class="wallet-actions"><button class="button button-primary compact" data-action="wallet-refresh" ${walletLoading ? 'disabled' : ''}>${icon('refresh')} ${walletLoading ? 'Checking…' : 'Refresh balance'}</button>${w?.address ? `<button class="button button-outline compact" data-action="copy-address">${icon('copy')} Copy address</button>` : ''}</div><p class="fine-print" id="wallet-status" role="status">${esc(message)}</p></section><section class="panel"><div class="panel-head"><h2>${icon('wallet')} Wallet details</h2>${badge(verified ? 'VERIFIED' : 'DEVNET')}</div><div class="wallet-facts"><div><span>Network</span>Solana Devnet</div><div><span>SOL balance</span>${verified ? esc(w.sol) + ' SOL' : 'Not checked'}</div><div><span>Last checked</span>${verified ? time(w.checked_at) : '—'}</div><div><span>Agent payment signing</span>Not connected</div><div><span>Custody</span>Local keypair</div></div><div class="panel-foot">${w?.address ? `<a class="text-button" target="_blank" rel="noopener noreferrer" href="https://explorer.solana.com/address/${encodeURIComponent(w.address)}?cluster=devnet">View on Solana Explorer ${icon('arrow')}</a>` : 'Configure the wallet with governor-wallet init.'}</div></section></div><div class="info-banner">The session budget is a spending allowance, separate from the wallet balance. Simulated settlements do not reduce these on-chain funds.</div>`;
+}
+function policyView() {
+  const p = state.policy;
+  return `<p class="subheading">Hard limits enforced by Governor before payment authorization. The agent can read these rules; it cannot change them.</p><div class="policy-grid"><section class="policy-card"><span class="eyebrow">01 / TOTAL EXPOSURE</span><div class="policy-number">${money(p.session_cap)} <small>USDC</small></div><h2>Session spending cap</h2><p>Settled payments plus outstanding holds must stay inside this allowance.</p></section><section class="policy-card"><span class="eyebrow">02 / SINGLE PURCHASE</span><div class="policy-number">${money(p.per_call_cap)} <small>USDC</small></div><h2>Per-call spending cap</h2><p>Any purchase above this price is refused before authorization.</p></section></div><section class="panel policy-table"><div class="panel-head"><h2>${icon('shield')} Runtime boundaries</h2><span class="status-badge">READ ONLY</span></div><div class="policy-line"><span>Maximum model turns</span><strong>${p.max_turns}</strong></div><div class="policy-line"><span>Maximum tool calls</span><strong>${p.max_tool_calls}</strong></div><div class="policy-line"><span>Run deadline</span><strong>${p.run_timeout_seconds} seconds</strong></div><div class="policy-line"><span>Ambiguous settlements</span><strong>Hold retained</strong></div><div class="policy-line"><span>Payment adapter</span><strong>Simulated</strong></div><div class="policy-line"><span>Gemini backend</span><strong>${esc(state.backend === 'vertex' ? 'Google Cloud' : 'Developer API')}</strong></div><div class="policy-line"><span>Model</span><strong>${esc(state.model)}</strong></div></section><div class="info-banner">Policy is loaded from the operator configuration when Governor starts. Changing it requires restarting the local server; sessions created with a different policy cannot be resumed under the new limits.</div>`;
+}
+function render(force = false) {
+  const {view} = route();
+  const signature = JSON.stringify([state, report, view, route().id, filter, search, wallet, walletLoading, submitting, connected]);
+  if (!force && signature === lastRender) return;
+  lastRender = signature;
+  const log = $('.terminal-log');
+  const scroll = log?.scrollTop || 0;
+  const atBottom = !log || log.scrollHeight - log.scrollTop - log.clientHeight < 30;
+  $('#breadcrumb').textContent = labels[view];
+  $('#page-title').textContent = titles[view];
+  $('#page-eyebrow').textContent = {overview:'THE CONTROL ROOM', sessions:'MISSION LOG', services:'APPROVED SERVICE CATALOG', wallet:'FUNDS & NETWORK', policy:'THE RULES OF ENGAGEMENT'}[view];
+  $$('nav [data-view]').forEach(link => {link.classList.toggle('active', link.dataset.view === view); if(link.dataset.view === view) link.setAttribute('aria-current','page'); else link.removeAttribute('aria-current');});
+  $('#new-session').disabled = !!disabled();
+  if (!state) { $('#view-content').innerHTML = '<div class="loading">Connecting to Governor<span class="cursor"></span></div>'; return; }
+  const searchFocused = document.activeElement?.id === 'session-search';
+  $('#view-content').innerHTML = ({overview, sessions:sessionsView, services:servicesView, wallet:walletView, policy:policyView}[view])();
+  const nextLog = $('.terminal-log');
+  if(nextLog) nextLog.scrollTop = atBottom ? nextLog.scrollHeight : scroll;
+  if (searchFocused) { $('#session-search')?.focus(); }
+}
+async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    state = await api('/api/state');
+    const requested = route().id;
+    const ids = state.sessions.filter(s=>s.compatible).map(s=>s.session_id);
+    selected = requested || (ids.includes(selected) ? selected : state.active_session || ids[0] || null);
+    report = selected ? await api('/api/sessions/' + encodeURIComponent(selected)) : null;
+    if(selected) storage.set('governor.session', selected);
+    connected = true;
+    $('#connection-error').hidden = true;
+  } catch (error) {
+    connected = false;
+    $('#connection-error').textContent = `${error.message} Displayed data may be stale. Retrying the local connection…`;
+    $('#connection-error').hidden = false;
+  } finally {
+    refreshing = false;
+    render();
+  }
+}
+function openLauncher(task = '') {
+  if (!state || state.active_session || submitting) return toast('Wait for the current run or local connection.');
+  $('#launch-error').hidden = true;
+  $('#run-mode').value = 'gemini';
+  $('#task').value = task;
+  $('#launch-policy').innerHTML = `<div><span>SESSION CAP</span> ${money(state.policy.session_cap)} USDC</div><div><span>PER CALL</span> ${money(state.policy.per_call_cap)} USDC</div>`;
+  modeChanged();
+  $('#launch-dialog').showModal();
+  $('#task').focus();
+}
+function modeChanged() {
+  const demo = $('#run-mode').value === 'demo';
+  $('#task').disabled = demo;
+  $('#task').required = !demo;
+  $$('.task-presets button').forEach(button => {button.disabled = demo;});
+  $('#mode-note').textContent = demo ? 'A scripted scenario exercises purchases, cap refusals, a lost settlement response, and a local fallback. No API calls or wallet transactions.' : 'Gemini inference uses your configured Google credentials. Model costs are separate from the simulated USDC budget.';
+}
+async function startRun(mode, task = '') {
+  if(submitting) return;
+  submitting = true;
+  $('#submit-run').disabled = true;
+  $('#launch-error').hidden = true;
+  render();
+  try {
+    const result = await api('/api/runs', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,task})});
+    selected = result.session_id;
+    storage.set('governor.session',selected);
+    $('#launch-dialog').close();
+    location.hash = 'sessions/' + selected;
+    toast(mode === 'demo' ? 'Sandbox started. Watch the spending gate at work.' : 'Agent launched. Your spending rules are active.');
+    await refresh();
+  } catch(error) {
+    if ($('#launch-dialog').open) { $('#launch-error').textContent = error.message; $('#launch-error').hidden = false; }
+    else toast(error.message);
+  } finally {
+    submitting = false;
+    $('#submit-run').disabled = false;
+    render();
+  }
+}
+async function refreshWallet() {
+  if(walletLoading) return;
+  walletLoading = true;
+  render();
+  try {wallet = await api('/api/wallet');}
+  catch(error) {toast(error.message); wallet = {...wallet,status:'unavailable'};}
+  finally {walletLoading = false; render();}
+}
+document.addEventListener('click', async event => {
+  const button = event.target.closest('button');
+  if (!button || button.disabled) return;
+  if(button.dataset.themeChoice) return setTheme(button.dataset.themeChoice);
+  if(button.dataset.filter) {filter = button.dataset.filter; return render();}
+  if(button.dataset.session) {location.hash = 'sessions/' + button.dataset.session; return;}
+  if(button.dataset.service) return openLauncher(`Use the ${button.dataset.service} service to summarize this text: Autonomous agents can buy services. Governor enforces a hard spending budget. If the payment is refused or pending, use the local fallback and explain the outcome.`);
+  if(button.dataset.preset) {
+    $('#task').value = {
+      budget:'Call get_budget exactly once, then report the available atomic USDC budget in one sentence. Do not purchase anything.',
+      summary:'Use the summary service for this text: Agents buy services. Governor enforces a budget. Preserve funds on ambiguous failures. Report the result and remaining budget.',
+      refusal:'Try the overpriced service for this text: Spending limits must hold. If it is refused, summarize locally and explain the refusal. Do not retry the denied purchase.',
+    }[button.dataset.preset];
+    $('#task').focus(); return;
+  }
+  switch(button.dataset.action) {
+    case 'launch': return openLauncher();
+    case 'demo': return startRun('demo');
+    case 'wallet-refresh': return refreshWallet();
+    case 'copy-address':
+      try {await navigator.clipboard.writeText(wallet.address); toast('Wallet address copied.');}
+      catch {toast('Could not copy. Select the wallet address to copy it manually.');}
+      return;
+  }
+});
+document.addEventListener('change', event => {
+  if(event.target.id === 'session-select') {selected = event.target.value; report = null; refresh();}
+});
+document.addEventListener('input', event => {
+  if(event.target.id === 'session-search') {search = event.target.value; render();}
+});
+$('#new-session').addEventListener('click',()=>openLauncher());
+$('#close-dialog').addEventListener('click',()=>$('#launch-dialog').close());
+$('#run-mode').addEventListener('change', modeChanged);
+$('#launch-form').addEventListener('submit', event=>{event.preventDefault(); if(!$('#launch-form').reportValidity()) return; startRun($('#run-mode').value, $('#task').value.trim());});
+window.addEventListener('hashchange',()=>{filter='all';render();refresh();if(route().view === 'wallet' && !wallet) refreshWallet();});
+$$('[data-icon]').forEach(element => {element.innerHTML = icon(element.dataset.icon);});
+setTheme(storage.get('governor.theme') || 'light');
+render();
+refresh();
+if(route().view === 'wallet') refreshWallet();
+setInterval(()=>{if(!document.hidden) refresh();},1500);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden) refresh();});
