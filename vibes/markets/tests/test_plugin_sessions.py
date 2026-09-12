@@ -183,3 +183,36 @@ def test_cli_rejects_nonlocal_or_credentialed_origins(url):
     )
     assert result.returncode == 2
     assert "loopback" in result.stderr
+
+
+def test_terminal_messages_are_durable_idempotent_and_advisory(dashboard):
+    app, client = dashboard
+    create(client)
+    before = app.ledger.snapshot("codex-test")
+    message = {
+        "session_id": "codex-test",
+        "message_id": "msg-1",
+        "role": "user",
+        "text": "Find a vendor <script>alert(1)</script>",
+    }
+    assert client.post("/api/plugin/messages", json=message).status_code == 200
+    assert client.post("/api/plugin/messages", json=message).status_code == 200
+    assert (
+        client.post("/api/plugin/messages", json={**message, "text": "changed"}).status_code == 503
+    )
+    assert (
+        client.post("/api/plugin/messages", json={**message, "role": "system"}).status_code == 400
+    )
+    assert (
+        client.post("/api/plugin/messages", json={**message, "text": "x" * 20001}).status_code
+        == 400
+    )
+    app.ledger.start("not-codex", "Gemini task")
+    assert (
+        client.post("/api/plugin/messages", json={**message, "session_id": "not-codex"}).status_code
+        == 503
+    )
+    report = Dashboard(app.settings).report("codex-test")
+    assert report["conversation"] == [message]
+    assert report["tool_results"] == []
+    assert report["budget"] == before

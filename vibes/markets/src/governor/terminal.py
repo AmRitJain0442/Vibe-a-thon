@@ -8,6 +8,7 @@ import webbrowser
 from decimal import Decimal
 
 from platformdirs import user_state_path
+from rich.markup import escape
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -156,6 +157,8 @@ class GovernorTerminal(App):
     .orange { color: #ff8a3d; text-style: bold; }
     .tool { margin-bottom: 1; padding: 0 1; border: solid #39332b; background: #171614; }
     .tool Static { height: auto; max-height: 18; overflow-y: auto; }
+    #compact-budget { display: none; height: 1; padding: 0 3; color: #aaa59d; }
+    .compact #compact-budget { display: block; }
     #status { height: 1; padding: 0 3; color: #ff8a3d; }
     #composer { height: 5; padding: 0 2; }
     #prompt { width: 1fr; border: tall #ff8a3d; background: #211c17; }
@@ -185,6 +188,8 @@ class GovernorTerminal(App):
         self.messages = {}
         self.tools = {}
         self.last_answer = ""
+        self.last_turn_status = None
+        self.mirror_failed = False
         self.report = None
         self.exiting = False
         self.request_lock = asyncio.Lock()
@@ -218,6 +223,7 @@ class GovernorTerminal(App):
                     "USDC service budget only.\nCodex inference uses your\nexisting Codex account.",
                     id="budget-note",
                 )
+        yield Static("Service budget starts with your first prompt", id="compact-budget")
         yield Static("○ Ready — type a prompt below", id="status")
         with Horizontal(id="composer"):
             yield Prompt()
@@ -317,6 +323,11 @@ class GovernorTerminal(App):
                 raise AppError("Cannot change the existing session's payment mode.")
             if self.args.task_list:
                 raise AppError("An attached session cannot replace its task plan.")
+            for message in report.get("conversation", []):
+                role = message["role"]
+                await self.add(
+                    ("YOU" if role == "user" else "CODEX") + "\n" + message["text"], role
+                )
         else:
             # Keep both identity and payload across lost responses; never allocate a fresh cap.
             if self.payload is None:
@@ -413,6 +424,7 @@ class GovernorTerminal(App):
         self.status("◌ Connecting Codex…")
         try:
             await self.ensure_session(text)
+            await self.mirror_message("user", text)
             await self.connect_codex()
             self.status("◌ Codex is working · Esc to stop")
             result = await self.transport.request(
@@ -452,7 +464,10 @@ class GovernorTerminal(App):
             kind, key = item.get("type"), item.get("id")
             if kind == "agentMessage" and method == "item/completed":
                 answer = item.get("text", "")
-                self.last_answer = answer or self.last_answer
+                if item.get("phase") != "commentary":
+                    self.last_answer = answer or self.last_answer
+                if answer:
+                    self.mirror_message_worker("assistant", answer, key)
                 if key not in self.messages:
                     self.messages[key] = [await self.add("CODEX\n" + answer, "assistant"), answer]
             elif kind in (
@@ -464,7 +479,9 @@ class GovernorTerminal(App):
             ):
                 done = method == "item/completed"
                 name = item.get("tool") or item.get("command") or kind
-                title = f"{'✓' if done else '◌'} {name}"[:160]
+                failed = item.get("status") in ("failed", "declined") or bool(item.get("error"))
+                marker = "!" if failed else "✓" if done else "◌"
+                title = escape(f"{marker} {name}"[:160])
                 detail = json.dumps(item, indent=2, ensure_ascii=False)[:16000]
                 if key not in self.tools:
                     body = Static(Text(detail))
@@ -485,6 +502,7 @@ class GovernorTerminal(App):
             turn = params.get("turn", {})
             self.busy = False
             self.turn_id = None
+            self.last_turn_status = turn.get("status")
             self.status("○ " + turn.get("status", "completed").capitalize() + " · type a follow-up")
             if turn.get("error"):
                 await self.add("Codex: " + json.dumps(turn["error"]))
@@ -526,6 +544,30 @@ class GovernorTerminal(App):
                 )
             self.status("◌ Codex is working · Esc to stop" if self.busy else "○ Ready")
 
+    @work(group="mirror")
+    async def mirror_message_worker(self, role, text, message_id=None):
+        await self.mirror_message(role, text, message_id)
+
+    async def mirror_message(self, role, text, message_id=None):
+        try:
+            await asyncio.to_thread(
+                self.client.request,
+                "/api/plugin/messages",
+                {
+                    "session_id": self.sid,
+                    "message_id": identifier(message_id) if message_id else uuid.uuid4().hex,
+                    "role": role,
+                    "text": text[:20000],
+                },
+            )
+        except (ValueError, OSError):
+            if not self.mirror_failed:
+                self.mirror_failed = True
+                await self.add(
+                    "Conversation sync unavailable. Restart governor-web with the "
+                    "current version. Governor tools still use the existing ledger."
+                )
+
     @work
     async def poll_budget_worker(self):
         await self.poll_budget()
@@ -552,10 +594,16 @@ class GovernorTerminal(App):
                     + f"Runway    {self.report.get('runway', {}).get('state', 'UNKNOWN')}"
                 )
             )
+            self.query_one("#compact-budget", Static).update(
+                f"{dollars(available)} available · {dollars(budget['settled'])} spent · {self.mode}"
+            )
             self.closed_session = self.report["status"] in ("COMPLETED", "STOPPED")
             if self.closed_session and not self.busy:
                 self.status("■ Session finished · /app to review, Ctrl+Q to quit")
         except (ValueError, OSError):
+            self.query_one("#compact-budget", Static).update(
+                "Budget offline · reconnect governor-web"
+            )
             self.query_one("#budget", Static).update(
                 "BUDGET OFFLINE\n\nReconnect governor-web.\nExisting spend and "
                 "holds\nremain in the ledger."
@@ -573,7 +621,11 @@ class GovernorTerminal(App):
             await asyncio.to_thread(
                 self.client.request,
                 "/api/plugin/finish",
-                {"session_id": self.sid, "answer": self.last_answer[:20000], "status": "COMPLETED"},
+                {
+                    "session_id": self.sid,
+                    "answer": self.last_answer[:20000],
+                    "status": "COMPLETED" if self.last_turn_status == "completed" else "STOPPED",
+                },
             )
             self.closed_session = True
             await self.add("Final answer saved to " + self.client.link(self.sid))

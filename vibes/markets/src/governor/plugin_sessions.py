@@ -147,6 +147,38 @@ class PluginSessions:
             with self.app.lock:
                 self.app.active = None
 
+    def message(self, payload):
+        """Mirror visible conversation messages without consuming a tool call or changing caps."""
+        if not isinstance(payload, dict) or set(payload) != {
+            "session_id",
+            "message_id",
+            "role",
+            "text",
+        }:
+            raise ValueError("Expected session_id, message_id, role, text")
+        sid = identifier(payload["session_id"])
+        identifier(payload["message_id"])
+        if payload["role"] not in ("user", "assistant") or not isinstance(payload["text"], str):
+            raise ValueError("Invalid conversation message")
+        if not 1 <= len(payload["text"]) <= 20000:
+            raise ValueError("Message must contain 1–20000 characters")
+        with self.app.lock:
+            report = self.owned(sid)
+            messages = [e["data"] for e in report["events"] if e["kind"] == "CODEX_MESSAGE"]
+            previous = next((m for m in messages if m["message_id"] == payload["message_id"]), None)
+            if previous:
+                if previous != payload:
+                    raise LedgerError("Message ID already belongs to different content")
+                return previous
+            if (
+                len(messages) >= 500
+                or sum(len(m["text"].encode()) for m in messages) + len(payload["text"].encode())
+                > 2_000_000
+            ):
+                raise LedgerError("Conversation message limit reached")
+            self.ledger.record(sid, "CODEX_MESSAGE", payload)
+        return payload
+
     def finish(self, payload):
         if not isinstance(payload, dict) or set(payload) != {"session_id", "answer", "status"}:
             raise ValueError("Expected session_id, answer, status")
@@ -185,6 +217,7 @@ class PluginSessions:
         if report["client"].get("runner") != "codex":
             return
         events = report["events"]
+        report["conversation"] = [e["data"] for e in events if e["kind"] == "CODEX_MESSAGE"]
         report["tool_results"] = [e["data"] for e in events if e["kind"] == "CODEX_TOOL_RESULT"]
         final = next((e["data"] for e in events if e["kind"] == "CODEX_FINISHED"), None)
         pending = {e["data"]["call_id"] for e in events if e["kind"] == "CODEX_TOOL_REQUEST"} - {

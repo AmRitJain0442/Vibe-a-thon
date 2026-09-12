@@ -432,6 +432,7 @@ def make_server(app: Dashboard, port: int = 8787) -> ThreadingHTTPServer:
                 "/api/plugin/runs",
                 "/api/plugin/calls",
                 "/api/plugin/finish",
+                "/api/plugin/messages",
             ):
                 return self.respond(404, {"error": "Endpoint not found."})
             try:
@@ -442,6 +443,8 @@ def make_server(app: Dashboard, port: int = 8787) -> ThreadingHTTPServer:
                 payload = json.loads(self.rfile.read(length))
                 if self.path == "/api/plugin/calls":
                     return self.respond(200, app.plugin.call(payload))
+                if self.path == "/api/plugin/messages":
+                    return self.respond(200, app.plugin.message(payload))
                 if self.path == "/api/plugin/finish":
                     return self.respond(200, app.plugin.finish(payload))
                 if self.path == "/api/reconcile":

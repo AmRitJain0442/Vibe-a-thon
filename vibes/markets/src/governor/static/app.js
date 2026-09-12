@@ -186,6 +186,7 @@ function eventMessage(event) {
     case 'CLIENT_REQUEST': return 'Codex CLI connected. Reasoning stays in Codex.';
     case 'CODEX_TOOL_REQUEST': return `Codex → ${d.name} / call ${d.call_id}`;
     case 'CODEX_TOOL_RESULT': return `${d.name} → ${d.result?.code || 'complete'} / call ${d.call_id}`;
+    case 'CODEX_MESSAGE': return `${d.role === 'user' ? 'You' : 'Codex'}: ${d.text.slice(0, 180)}`;
     case 'CODEX_FINISHED': return `Codex recorded its final result: ${d.status}`;
     case 'SESSION_CREATED': return 'New session created. Spending policy attached.';
     case 'SESSION_RESUMED': return 'Session resumed. Existing holds preserved.';
@@ -233,10 +234,15 @@ function sessionsView() {
   const id = route().id;
   if (id) {
     if (!report || report.session_id !== id) return '<div class="empty">This session is unavailable. Return to the session list or inspect its policy using the CLI.</div>';
-    return `<div class="toolbar"><a class="text-button" href="#sessions">← All sessions</a><div class="wallet-actions"><a class="button button-outline compact" href="/api/sessions/${esc(id)}?format=json" download>${icon('download')} Audit JSON</a><a class="button button-outline compact" href="/api/sessions/${esc(id)}?format=csv" download>${icon('download')} Expenses CSV</a></div></div><section class="panel"><div class="panel-head"><h2>${esc(id)}</h2>${badge(report.status)}</div>${sessionBody()}</section><div class="section-top"><h2 class="section-title">Session budget <small>${livePayment() ? 'REAL DEVNET USDC' : 'SIMULATED USDC'}</small></h2></div>${stats()}${runwayPanel()}${discoveryPanel()}${report.result?.answer ? `<section class="answer"><h2>${icon('terminal')} Agent response</h2><p>${esc(report.result.answer)}</p></section>` : ''}${codexTools()}${liveReceipts()}${attempts()}${activity()}`;
+    return `<div class="toolbar"><a class="text-button" href="#sessions">← All sessions</a><div class="wallet-actions"><a class="button button-outline compact" href="/api/sessions/${esc(id)}?format=json" download>${icon('download')} Audit JSON</a><a class="button button-outline compact" href="/api/sessions/${esc(id)}?format=csv" download>${icon('download')} Expenses CSV</a></div></div><section class="panel"><div class="panel-head"><h2>${esc(id)}</h2>${badge(report.status)}</div>${sessionBody()}</section><div class="section-top"><h2 class="section-title">Session budget <small>${livePayment() ? 'REAL DEVNET USDC' : 'SIMULATED USDC'}</small></h2></div>${stats()}${runwayPanel()}${discoveryPanel()}${report.result?.answer ? `<section class="answer"><h2>${icon('terminal')} Agent response</h2><p>${esc(report.result.answer)}</p></section>` : ''}${codexConversation()}${codexTools()}${liveReceipts()}${attempts()}${activity()}`;
   }
   const sessions = state.sessions.filter(s=>(s.task + s.session_id).toLowerCase().includes(search.toLowerCase()));
   return `<p class="subheading">Every task has its own budget, persistent holds, and a record of every decision.</p><div class="toolbar"><input id="session-search" type="search" placeholder="Search sessions…" aria-label="Search sessions" value="${esc(search)}"><span class="fine-print">${state.sessions.length} LOCAL SESSIONS</span></div><div class="session-list">${sessions.length ? sessions.map(s=>`<button class="session-row" data-session="${esc(s.session_id)}" ${s.compatible ? '' : 'disabled'}><span class="row-icon">${icon('terminal')}</span><span><span class="row-title">${esc(s.task)}</span><span class="row-sub">${esc(s.session_id)} ${s.compatible ? '' : '· Policy changed — inspect with CLI'}</span></span><span class="row-date">${date(s.created_at)}</span>${icon('chevron')}</button>`).join('') : `<div class="panel empty"><img src="/assets/guardian.png" alt=""><strong>${search ? 'No matching sessions.' : 'A clean slate.'}</strong>${search ? 'Try another search.' : 'Your next idea starts with a mission.'}${search ? '' : '<br><button class="text-button" data-action="launch">Launch your first agent ↗</button>'}</div>`}</div>`;
+}
+function codexConversation() {
+  const messages = report?.conversation || [];
+  if (!codexSession() || !messages.length) return '';
+  return `<section class="panel"><div class="panel-head"><h2>Terminal conversation</h2><span class="status-badge">${messages.length} MESSAGES</span></div><div class="discovery-content">${messages.map(m=>`<details open><summary>${m.role === 'user' ? 'You' : 'Codex'}</summary><pre class="codex-tool-output">${esc(m.text)}</pre></details>`).join('')}</div></section>`;
 }
 function codexTools() {
   if (!codexSession()) return '';
