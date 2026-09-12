@@ -55,7 +55,7 @@ class CodexTools(ToolRegistry):
                 candidates = [
                     c
                     for row in raw["resources"]
-                    if (c := normalize(row, budget, ledger.policy.per_call_cap))
+                    if (c := normalize(row, budget, int(budget["per_call_cap"])))
                 ]
                 result = {
                     "status": "COMPLETED" if candidates else "NO_MATCH",

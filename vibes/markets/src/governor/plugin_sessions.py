@@ -7,6 +7,7 @@ import re
 
 from governor.audit import write_audit
 from governor.codex_tools import CodexTools
+from governor.config import BudgetPolicy, atomic
 from governor.ledger import LedgerError
 from governor.mock import MockPaymentAdapter
 from governor.payments import PaymentGate
@@ -40,6 +41,7 @@ class PluginSessions:
             "task",
             "mode",
             "task_list",
+            "limits",
         }:
             raise ValueError("Expected session_id, task, mode and optional task_list")
         sid = identifier(payload.get("session_id"))
@@ -52,6 +54,9 @@ class PluginSessions:
             raise ValueError("Invalid payment mode")
         plan = validate_plan(payload.get("task_list"))
         metadata = {"source": "codex-cli", "runner": "codex", "request_hash": fingerprint(payload)}
+        limits = self.validate_limits(payload.get("limits"))
+        if limits is not None:
+            metadata["limits"] = limits
         with self.app.lock:
             if any(s["session_id"] == sid for s in self.ledger.sessions()):
                 if source(self.ledger.report(sid)) != metadata:
@@ -60,9 +65,41 @@ class PluginSessions:
             if mode == "solana-devnet":
                 vendor_public(self.settings.data_dir)
             self.ledger.start(
-                sid, task.strip(), plan=plan, payment_mode=mode, client_request=metadata
+                sid,
+                task.strip(),
+                plan=plan,
+                payment_mode=mode,
+                client_request=metadata,
+                budget_policy=BudgetPolicy(
+                    session_cap=int(limits["session_cap"]),
+                    per_call_cap=int(limits["per_call_cap"]),
+                )
+                if limits
+                else None,
             )
         return sid
+
+    def validate_limits(self, requested):
+        if requested is None:
+            return None
+        ceilings = {
+            "session_cap": self.settings.policy.session_cap,
+            "per_call_cap": self.settings.policy.per_call_cap,
+            "max_tool_calls": self.settings.max_tool_calls,
+            "tool_timeout_seconds": self.settings.run_timeout_seconds,
+        }
+        if not isinstance(requested, dict) or set(requested) - ceilings.keys():
+            raise ValueError("Invalid session limits")
+        result = {}
+        for key, ceiling in ceilings.items():
+            value = requested.get(key, str(ceiling) if key.endswith("cap") else ceiling)
+            number = atomic(value) if key.endswith("cap") else value
+            if type(number) is not int or not 1 <= number <= ceiling:
+                raise ValueError("Session limits must be positive and within operator ceilings")
+            result[key] = str(number) if key.endswith("cap") else number
+        if int(result["per_call_cap"]) > int(result["session_cap"]):
+            raise ValueError("Per-call cap cannot exceed the session cap")
+        return result
 
     def owned(self, sid):
         report = self.ledger.report(identifier(sid))
@@ -110,7 +147,12 @@ class PluginSessions:
                 raise LedgerError("Session is finished")
             if self.app.active:
                 raise LedgerError("Another tool or agent is running; wait and reuse this call ID")
-            if len(requests) >= self.settings.max_tool_calls:
+            limits = source(report).get("limits", {})
+            max_calls = min(self.settings.max_tool_calls, limits.get("max_tool_calls", 100))
+            timeout = min(
+                self.settings.run_timeout_seconds, limits.get("tool_timeout_seconds", 3600)
+            )
+            if len(requests) >= max_calls:
                 self.ledger.record(sid, "CODEX_CALL_REFUSED", {"code": "TOOL_CALL_LIMIT"})
                 return {"ok": False, "code": "TOOL_CALL_LIMIT"}
             registry = self.registry(sid, report["budget"]["payment_mode"])
@@ -129,7 +171,7 @@ class PluginSessions:
             self.app.active = sid
 
         async def execute():
-            async with asyncio.timeout(self.settings.run_timeout_seconds):
+            async with asyncio.timeout(timeout):
                 return await registry.execute(payload["tool"], payload["arguments"])
 
         try:

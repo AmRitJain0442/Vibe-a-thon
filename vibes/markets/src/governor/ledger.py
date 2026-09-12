@@ -173,13 +173,21 @@ class Ledger:
         plan: list | None = None,
         payment_mode: str = "mock",
         client_request: dict | None = None,
+        budget_policy: BudgetPolicy | None = None,
     ) -> None:
         if payment_mode not in ("mock", "solana-devnet"):
             raise LedgerError("unsupported payment mode")
         plan = runway.validate_plan(plan)
+        if budget_policy and (
+            budget_policy.session_cap > self.policy.session_cap
+            or budget_policy.per_call_cap > self.policy.per_call_cap
+        ):
+            raise LedgerError("Session limits exceed the operator policy")
         with self._transaction() as db:
             if resume:
                 row = self._session(db, session_id)
+                if budget_policy and budget_policy != self._budget_policy(db, session_id):
+                    raise LedgerError("A resumed session cannot replace its budget limits")
                 if row["task"] != task:
                     raise LedgerError("a session must resume its original task")
                 if self._payment_mode(db, session_id) != payment_mode:
@@ -192,6 +200,8 @@ class Ledger:
                 db.execute(
                     "INSERT INTO sessions VALUES (?,?,?)", (session_id, task, self.policy_hash)
                 )
+            if budget_policy and not resume:
+                self._event(db, session_id, "SESSION_LIMITS", budget_policy.model_dump())
             self._event(
                 db,
                 session_id,
@@ -272,6 +282,20 @@ class Ledger:
         ).fetchone()
         return json.loads(row[0]).get("payment_mode", "mock") if row else "mock"
 
+    def _budget_policy(self, db, session_id):
+        row = db.execute(
+            "SELECT data FROM events WHERE session_id=? AND kind='SESSION_LIMITS' "
+            "ORDER BY seq LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        selected = BudgetPolicy.model_validate_json(row[0]) if row else self.policy
+        if (
+            selected.session_cap > self.policy.session_cap
+            or selected.per_call_cap > self.policy.per_call_cap
+        ):
+            raise LedgerError("Stored session limits exceed the operator policy")
+        return selected
+
     def _snapshot(self, db, session_id):
         self._session(db, session_id)
         rows = db.execute(
@@ -281,12 +305,13 @@ class Ledger:
         totals = {row["status"]: row["total"] for row in rows}
         settled = totals.get("SETTLED", 0)
         held = totals.get("RESERVED", 0) + totals.get("AUTHORIZING", 0)
-        available = self.policy.session_cap - settled - held
+        policy = self._budget_policy(db, session_id)
+        available = policy.session_cap - settled - held
         if available < 0:
             raise LedgerError("ledger exposure exceeds configured budget")
         return {
-            "session_cap": str(self.policy.session_cap),
-            "per_call_cap": str(self.policy.per_call_cap),
+            "session_cap": str(policy.session_cap),
+            "per_call_cap": str(policy.per_call_cap),
             "settled": str(settled),
             "held": str(held),
             "available": str(available),
@@ -312,7 +337,7 @@ class Ledger:
                     raise LedgerError("attempt identity reused with different payment terms")
                 return Reservation(previous["status"], False, json.loads(previous["result"]))
             reason = None
-            if units > self.policy.per_call_cap:
+            if units > int(snapshot["per_call_cap"]):
                 reason = "PER_CALL_CAP_EXCEEDED"
             elif units > int(snapshot["available"]):
                 reason = "SESSION_CAP_EXCEEDED"

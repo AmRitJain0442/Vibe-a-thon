@@ -216,3 +216,57 @@ def test_terminal_messages_are_durable_idempotent_and_advisory(dashboard):
     assert report["conversation"] == [message]
     assert report["tool_results"] == []
     assert report["budget"] == before
+
+
+def test_selected_limits_enforced_by_ledger_and_survive_restart(dashboard):
+    app, client = dashboard
+    limits = {
+        "session_cap": "3000",
+        "per_call_cap": "2000",
+        "max_tool_calls": 2,
+        "tool_timeout_seconds": 1,
+    }
+    assert create(client, limits=limits).status_code == 202
+    result = call(
+        client, "first", "purchase_service", {"service_id": "summary", "text": "First"}
+    ).json()
+    assert result["code"] == "SETTLED"
+    assert call(client, "second").status_code == 200
+    assert call(client, "third").json()["code"] == "TOOL_CALL_LIMIT"
+    ledger = Dashboard(app.settings).ledger
+    assert ledger.snapshot("codex-test")["available"] == "1000"
+    assert (
+        ledger.reserve("codex-test", "per-call", "summary", "2001").result["code"]
+        == "PER_CALL_CAP_EXCEEDED"
+    )
+    assert (
+        ledger.reserve("codex-test", "total", "summary", "1500").result["code"]
+        == "SESSION_CAP_EXCEEDED"
+    )
+    assert create(client, limits=limits).status_code == 202
+    assert create(client, limits={**limits, "session_cap": "4000"}).status_code == 503
+    assert app.report("codex-test")["client"]["limits"] == limits
+    assert (
+        call(client, "first", "purchase_service", {"service_id": "summary", "text": "First"}).json()
+        == result
+    )
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        {"session_cap": "10001"},
+        {"per_call_cap": "3001"},
+        {"max_tool_calls": 17},
+        {"max_tool_calls": True},
+        {"tool_timeout_seconds": 121},
+        {"session_cap": "0"},
+        {"session_cap": 1000},
+        {"max_tool_calls": "2"},
+        {"session_cap": "1000", "per_call_cap": "2000"},
+    ],
+)
+def test_invalid_selected_limits_do_not_create_budget(dashboard, limits):
+    app, client = dashboard
+    assert create(client, limits=limits).status_code == 400
+    assert app.ledger.sessions() == []
