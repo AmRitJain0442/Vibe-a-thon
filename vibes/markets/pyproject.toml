@@ -13,12 +13,14 @@ dependencies = [
   "python-dotenv>=1.2.3,<2",
   "httpx>=0.28,<1",
   "solders>=0.29,<0.30",
+  "x402==2.22.0",
 ]
 
 [project.scripts]
 governor = "governor.cli:main"
 governor-wallet = "governor.solana_wallet:main"
 governor-web = "governor.web:main"
+governor-vendor = "governor.vendor.server:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=9.1,<10", "pytest-asyncio>=1.4,<2", "ruff>=0.16,<0.17", "httpx>=0.28,<1"]
@@ -28,6 +30,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 governor = ["static/*", "static/assets/*"]
+"governor.vendor" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
