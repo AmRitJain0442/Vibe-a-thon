@@ -1,9 +1,10 @@
-"""Payment boundary. Only the simulated adapter is enabled in this scaffold."""
+"""Payment boundary shared by mock services and the allowlisted Devnet vendor."""
 
 import asyncio
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from solders.signature import Signature
 
 from governor.config import atomic
 from governor.ledger import Ledger, LedgerError, Reservation
@@ -25,7 +26,8 @@ class Quote(BaseModel):
     service_id: str
     amount: str
     network: Literal["solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"] = DEVNET_NETWORK
-    mode: Literal["mock"] = "mock"
+    mode: Literal["mock", "solana-devnet"] = "mock"
+    payment_required: dict | None = None
 
     @field_validator("amount")
     @classmethod
@@ -38,9 +40,18 @@ class Quote(BaseModel):
 class Settlement(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
     amount: str
-    receipt: str = Field(pattern=r"^mock:")
+    receipt: str
     data: dict
-    mode: Literal["mock"] = "mock"
+    mode: Literal["mock", "solana-devnet"] = "mock"
+
+    @model_validator(mode="after")
+    def validate_receipt(self):
+        if self.mode == "mock":
+            if not self.receipt.startswith("mock:"):
+                raise ValueError("mock receipt required")
+        else:
+            Signature.from_string(self.receipt)
+        return self
 
 
 class PaymentAdapter(Protocol):
@@ -55,6 +66,9 @@ class PaymentGate:
         self.ledger = ledger
         self.session_id = session_id
         self.adapter = adapter
+        self.mode = getattr(adapter, "mode", "mock")
+        if self.ledger.snapshot(session_id)["payment_mode"] != self.mode:
+            raise LedgerError("adapter differs from session payment mode")
         self.services = {service.id: service for service in adapter.catalog()}
 
     def _result(self, *, ok: bool, code: str, data: dict | None = None) -> dict:
@@ -106,7 +120,7 @@ class PaymentGate:
             return self._deny(attempt_id, "INVALID_CHALLENGE", service_id)
         except Exception:
             return self._deny(attempt_id, "QUOTE_UNAVAILABLE", service_id)
-        if quote.service_id != service_id:
+        if quote.service_id != service_id or quote.mode != self.mode:
             return self._deny(attempt_id, "SERVICE_MISMATCH", service_id)
         # Check hard caps before quote ceilings so cap refusals are attributable.
         # A quote mismatch is still refused before authorization.
@@ -117,19 +131,20 @@ class PaymentGate:
             self.ledger.release_unsigned(self.session_id, attempt_id, "PRICE_CHANGED")
             return self._deny(attempt_id, "PRICE_CHANGED", service_id)
 
+        if hasattr(self.adapter, "preflight"):
+            try:
+                await self.adapter.preflight(quote)
+            except Exception:
+                self.ledger.release_unsigned(self.session_id, attempt_id, "PAYMENT_SETUP_REQUIRED")
+                return self._deny(attempt_id, "PAYMENT_SETUP_REQUIRED", service_id)
+
         self.ledger.mark_authorizing(self.session_id, attempt_id)
         try:
             authorization = await self.adapter.authorize(quote, attempt_id)
             settlement = Settlement.model_validate(
                 (await self.adapter.settle(authorization, text)).model_dump()
             )
-            result = {
-                "attempt_id": attempt_id,
-                "receipt": settlement.receipt,
-                "simulation": True,
-                "output": settlement.data,
-            }
-            self.ledger.commit(self.session_id, attempt_id, settlement.amount, result)
+            result = self._commit(attempt_id, settlement)
             return self._result(ok=True, code="SETTLED", data=result)
         except asyncio.CancelledError:
             self.ledger.record(
@@ -155,3 +170,32 @@ class PaymentGate:
                 },
             )
             return self._result(ok=False, code=code, data={"attempt_id": attempt_id})
+
+    def _commit(self, attempt_id: str, settlement: Settlement) -> dict:
+        if settlement.mode != self.mode:
+            raise LedgerError("settlement payment mode mismatch")
+        result = {
+            "attempt_id": attempt_id,
+            "receipt": settlement.receipt,
+            "simulation": self.mode == "mock",
+            "output": settlement.data,
+        }
+        self.ledger.commit(self.session_id, attempt_id, settlement.amount, result)
+        return result
+
+    async def reconcile(self, attempt_id: str) -> dict:
+        previous = self.ledger.lookup(self.session_id, attempt_id)
+        if previous is None:
+            return self._result(ok=False, code="UNKNOWN_ATTEMPT")
+        if previous.status != "AUTHORIZING" or not hasattr(self.adapter, "reconcile"):
+            return self._previous(previous, attempt_id)
+        try:
+            settlement = await self.adapter.reconcile(attempt_id)
+            if settlement:
+                data = self._commit(attempt_id, Settlement.model_validate(settlement.model_dump()))
+                return self._result(ok=True, code="SETTLED", data=data)
+        except (LedgerError, asyncio.CancelledError):
+            raise
+        except Exception:
+            pass
+        return self._result(ok=False, code="PAYMENT_PENDING", data={"attempt_id": attempt_id})

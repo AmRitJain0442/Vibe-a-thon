@@ -46,7 +46,7 @@ class Settings(BaseModel):
     max_tool_calls: int = Field(default=16, gt=0, le=100)
     run_timeout_seconds: int = Field(default=120, gt=0, le=3600)
     model_timeout_seconds: int = Field(default=30, gt=0, le=300)
-    payment_mode: Literal["mock"] = "mock"
+    payment_mode: Literal["mock", "solana-devnet"] = "mock"
 
     @model_validator(mode="after")
     def validate_timeouts(self) -> "Settings":

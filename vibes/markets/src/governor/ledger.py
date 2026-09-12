@@ -171,13 +171,18 @@ class Ledger:
         *,
         resume: bool = False,
         plan: list | None = None,
+        payment_mode: str = "mock",
     ) -> None:
+        if payment_mode not in ("mock", "solana-devnet"):
+            raise LedgerError("unsupported payment mode")
         plan = runway.validate_plan(plan)
         with self._transaction() as db:
             if resume:
                 row = self._session(db, session_id)
                 if row["task"] != task:
                     raise LedgerError("a session must resume its original task")
+                if self._payment_mode(db, session_id) != payment_mode:
+                    raise LedgerError("a resumed session cannot change its payment mode")
                 if plan is not None and plan != self._plan(db, session_id):
                     raise LedgerError("a resumed session cannot replace its caller task list")
             else:
@@ -186,7 +191,12 @@ class Ledger:
                 db.execute(
                     "INSERT INTO sessions VALUES (?,?,?)", (session_id, task, self.policy_hash)
                 )
-            self._event(db, session_id, "SESSION_RESUMED" if resume else "SESSION_CREATED", {})
+            self._event(
+                db,
+                session_id,
+                "SESSION_RESUMED" if resume else "SESSION_CREATED",
+                {"payment_mode": payment_mode},
+            )
             if not resume and plan is not None:
                 self._event(db, session_id, "TASK_PLAN", {"items": plan})
 
@@ -251,6 +261,14 @@ class Ledger:
                 )
             ]
 
+    def _payment_mode(self, db, session_id):
+        row = db.execute(
+            "SELECT data FROM events WHERE session_id=? AND kind='SESSION_CREATED' "
+            "ORDER BY seq LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        return json.loads(row[0]).get("payment_mode", "mock") if row else "mock"
+
     def _snapshot(self, db, session_id):
         self._session(db, session_id)
         rows = db.execute(
@@ -270,7 +288,7 @@ class Ledger:
             "held": str(held),
             "available": str(available),
             "unit": "atomic_usdc",
-            "payment_mode": "mock",
+            "payment_mode": self._payment_mode(db, session_id),
         }
 
     def snapshot(self, session_id: str) -> dict:
