@@ -52,6 +52,9 @@ let filter = 'all';
 let search = '';
 let refreshing = false;
 let submitting = false;
+let discoveryQuery = '';
+let discoveryError = '';
+let discoverySubmitting = false;
 let lastRender = '';
 let connected = false;
 let toastTimer;
@@ -64,7 +67,7 @@ function route() {
 function currentBudget() {
   return report?.budget || {available: state?.policy.session_cap || '0', settled:'0', held:'0', session_cap:state?.policy.session_cap || '0', per_call_cap:state?.policy.per_call_cap || '0'};
 }
-function disabled() { return state?.active_session || submitting || !state || !connected ? 'disabled' : ''; }
+function disabled() { return state?.active_session || submitting || discoverySubmitting || !state || !connected ? 'disabled' : ''; }
 function toast(message) {
   clearTimeout(toastTimer);
   $('#toast').textContent = message;
@@ -131,12 +134,35 @@ function runwayPanel() {
   };
   return `<section class="panel runway-panel" aria-label="Budget runway"><div class="panel-head"><h2>${icon('arrow')} Budget runway <span class="advisory-label">ADVISORY</span></h2><div class="runway-heading-actions">${badge(r.state)}<button class="text-button" data-action="runway-demo" ${disabled()}>Try demo ${icon('arrow')}</button></div></div><div class="runway-content"><div class="runway-summary"><div class="eyebrow">${planned ? `${completed} OF ${total} TASKS COMPLETE` : `${completed} OBSERVED ${unit.toUpperCase()}`}</div><p>${esc(explanation)}</p>${planned ? `<div class="task-progress" aria-label="${completed} of ${total} tasks complete">${Array.from({length:Math.min(total,30)},(_,i)=>`<i class="${i < Math.floor(completed * Math.min(total,30) / (total || 1)) ? 'done' : ''}"></i>`).join('')}</div>` : ''}</div><div class="runway-metric"><span>PROJECTED REMAINING COST</span><strong>${r.projected ? `${money(r.projected.p50)} → ${money(r.projected.p90)}` : '—'}</strong><small>${r.projected ? 'USDC / p50 → p90 scenario' : 'Awaiting workload and sufficient samples'}</small></div><div class="runway-metric"><span>AFFORDABLE AT P90</span><strong>${r.runwayTasks ?? '—'} <small>${unit}</small></strong><small>${r.burnRate ? `${money(r.burnRate.p90)} USDC / ${unit === 'calls' ? 'call' : 'task'}` : 'No supported estimate yet'}</small></div></div>${options.length ? `<div class="runway-options"><span class="eyebrow">PLANNING OPTIONS · NO AUTOMATIC CAP OR SCOPE CHANGES</span><ul>${options.map(o=>`<li>${esc(optionText(o))}</li>`).join('')}</ul></div>` : ''}${warning && r.state !== 'SHORTFALL' ? `<div class="runway-history">Earlier warning: ${warning.tasksCompleted} tasks done, ${money(warning.remaining)} USDC left, ${money(warning.projected.p90)} projected at p90. Short by ${money(warning.shortfall)} USDC. ${r.reason === 'PLAN_COMPLETE' ? `Finished all ${completed} items with ${money(r.remaining)} USDC remaining.` : 'See runway events for the subsequent decisions.'}</div>` : ''}<div class="panel-foot"><span>OBSERVED COSTS · PAYMENT BUDGET ONLY · ${r.mixedTaskTypes ? 'SEPARATE ESTIMATES PER TASK TYPE' : 'MINIMUM 3 SAMPLES'}</span><span>THE LEDGER ALWAYS DECIDES</span></div></section>`;
 }
+function advertisedPrice(amount, compatible) {
+  return typeof amount === 'string' && /^\d+$/.test(amount) ? compatible ? `${money(amount)} USDC / CALL` : `${amount} ATOMIC UNITS / CALL` : 'Price not supplied';
+}
+function discoveryPanel() {
+  const d = report?.discovery;
+  if (!d || d.status === 'IDLE') return `<section class="panel discovery-panel"><div class="panel-head"><h2>${icon('blocks')} Vendor scout</h2><span class="status-badge">READY</span></div><div class="discovery-empty"><strong>Find a vendor for the mission<span class="orange">_</span></strong><p>A Gemini scout can search Bazaar in parallel, compare advertised prices and explain its shortlist.</p><a class="text-button" href="#services">Explore Bazaar ${icon('arrow')}</a></div></section>`;
+  const live = ['PLANNING','SEARCHING','RANKING'].includes(d.status);
+  const stages = ['PLANNING','SEARCHING','RANKING'];
+  const stage = stages.indexOf(d.status);
+  const events = report.events || [];
+  const queries = [...new Set([...(d.queries || []), ...events.filter(e=>['DISCOVERY_SEARCH_STARTED','DISCOVERY_SEARCH_FINISHED'].includes(e.kind)).map(e=>e.data.query)].filter(q=>typeof q === 'string'))];
+  const explanations = {PLANNING:'The scout is turning your task into focused searches.', SEARCHING:'Search branches are querying Bazaar concurrently.', RANKING:'Comparing task fit, network compatibility, advertised price and usage signals.', COMPLETED:'Search complete. The recommendation is advisory.', NO_MATCH:'No suitable vendor was found within this search. Try a more specific task or another query.', FAILED:'The scout could not complete this search. Review the details below and retry.', CANCELLED:'The scout stopped before completing its search.'};
+  const candidates = Array.isArray(d.candidates) ? [...d.candidates].sort((a,b)=>Number(b.id === d.selected_id)-Number(a.id === d.selected_id)) : [];
+  const chosen = candidates.find(c=>c.id === d.selected_id);
+  const branch = query => {
+    const finish = [...events].reverse().find(e=>e.kind === 'DISCOVERY_SEARCH_FINISHED' && e.data.query === query);
+    const started = events.some(e=>e.kind === 'DISCOVERY_SEARCH_STARTED' && e.data.query === query);
+    const label = finish ? (finish.data.status === 'FAILED' ? 'FAILED' : `${finish.data.count ?? 0} FOUND`) : live && started ? 'SEARCHING' : live ? 'QUEUED' : 'STOPPED';
+    return `<li><span class="branch-node ${finish?.data.status === 'FAILED' ? 'failed' : finish ? 'done' : live && started ? 'active' : ''}"></span><span>${esc(query)}</span><small>${esc(label)}</small></li>`;
+  };
+  const candidateCard = c => `<article class="vendor-card ${c.id === d.selected_id ? 'recommended' : ''}"><div class="vendor-top"><span class="eyebrow">${c.id === d.selected_id ? 'SCOUT RECOMMENDATION' : 'BAZAAR LISTING'}</span>${badge(c.compatible ? c.within_budget ? 'WITHIN_BUDGET' : 'OVER_BUDGET' : 'INCOMPATIBLE')}</div><h3>${esc(c.description || 'Undescribed endpoint')}</h3><p class="vendor-url">${esc(c.method || 'HTTP')} ${esc(c.resource)}</p><div class="vendor-metrics"><div><span>ADVERTISED PRICE</span><strong>${esc(advertisedPrice(c.amount,c.compatible))}</strong></div><div><span>ESTIMATED TASK FIT</span><strong>${Number.isFinite(c.task_fit) ? Math.max(0,Math.min(100,c.task_fit)) + '/100' : 'Unrated'}</strong></div><div><span>WEIGHTED RANK SCORE</span><strong>${Number.isFinite(c.score) ? Math.max(0,Math.min(100,c.score)) + '/100' : 'Unrated'}</strong></div></div><p class="vendor-network">${esc(c.compatible ? 'Solana Devnet · configured USDC' : c.network || 'Network unspecified')} · ${Number.isFinite(c.calls_30d) ? c.calls_30d : 0} calls / ${Number.isFinite(c.payers_30d) ? c.payers_30d : 0} payers in 30 days</p>${(c.reasons || []).length ? `<ul class="vendor-reasons">${c.reasons.map(reason=>`<li>${esc(reason)}</li>`).join('')}</ul>` : ''}${(c.issues || []).length ? `<div class="vendor-issues">${c.issues.map(issue=>`<p>${esc(issue)}</p>`).join('')}</div>` : ''}</article>`;
+  return `<section class="panel discovery-panel" aria-label="Vendor discovery"><div class="panel-head"><h2>${icon('blocks')} Vendor scout <span class="advisory-label">BAZAAR</span></h2><span role="status">${badge(d.status)}</span></div><div class="discovery-content"><div class="scout-stage-list" aria-label="Discovery stages">${stages.map((name,i)=>`<span class="scout-stage ${stage === i ? 'active' : stage > i || d.status === 'COMPLETED' || d.status === 'NO_MATCH' ? 'done' : ''}"><i>${i+1}</i>${name === 'PLANNING' ? 'Plan searches' : name === 'SEARCHING' ? 'Search in parallel' : 'Rank vendors'}</span>`).join('')}</div><p class="scout-query">${esc(d.query)}</p><p class="scout-explanation">${esc(explanations[d.status] || 'Waiting for discovery updates.')}</p>${queries.length ? `<ul class="search-branches" aria-label="Search branches">${queries.map(branch).join('')}</ul>` : ''}${d.summary ? `<div class="scout-recommendation"><span class="eyebrow">${chosen ? 'WHY THIS VENDOR' : 'SCOUT ASSESSMENT'}</span><p>${esc(d.summary)}</p></div>` : ''}${d.partial_results ? '<p class="scout-alert">Search coverage is limited or a branch failed; this is not the entire market.</p>' : ''}${(d.errors || []).length ? `<div class="scout-alert" role="status">${d.errors.map(error=>`<p>${esc(typeof error === 'string' ? error : error.message || 'A discovery step failed.')}</p>`).join('')}</div>` : ''}${candidates.length ? `<div class="vendor-list-heading"><span class="eyebrow">${candidates.length} CANDIDATE${candidates.length === 1 ? '' : 'S'} COMPARED</span><span class="fine-print">TASK FIT IS AN ESTIMATE</span></div><p class="scout-ranking-rule">Ranking: task fit 70%, price 20%, usage 10%. A recommendation needs at least 60/100 task fit, the configured network and USDC token, and room within the current per-call and session budgets.</p><div class="vendor-grid">${candidates.slice(0,4).map(candidateCard).join('')}</div>${candidates.length > 4 ? `<details class="more-vendors"><summary>View ${candidates.length-4} more candidates</summary><div class="vendor-grid">${candidates.slice(4).map(candidateCard).join('')}</div></details>` : ''}` : live ? '<div class="scout-wait"><span class="cursor"></span> Waiting for vendor results…</div>' : ''}</div><div class="scout-usage"><span>SCOUT TOKENS</span><span>${esc(d.usage?.input_tokens ?? 0)} input / ${esc(d.usage?.output_tokens ?? 0)} output / ${esc(d.usage?.thought_tokens ?? 0)} thought</span><small>Gemini inference is billed separately from USDC.</small></div><div class="panel-foot discovery-foot"><span>ADVERTISED PRICES · SELLER QUALITY UNVERIFIED</span><span>DISCOVERED SELLERS: PURCHASES NOT CONNECTED</span></div></section>`;
+}
 function overview() {
   return `<section class="hero" aria-labelledby="hero-title"><span class="corner tl" aria-hidden="true">+</span><span class="corner tr" aria-hidden="true">+</span><span class="corner bl" aria-hidden="true">+</span>
     <div class="hero-copy"><div class="hero-label"><span class="square-dot"></span> AUTONOMY, WITH A HARD LIMIT.</div><h2 id="hero-title">LET IT RUN.<br><span>SET THE LIMIT.</span></h2><p>Give your AI agent room to work.<br>Keep every payment inside your rules.</p><div class="hero-actions"><button class="button button-primary" data-action="launch" ${disabled()}>Launch an agent ${icon('arrow')}</button><button class="text-button" data-action="demo" ${disabled()}>${icon('terminal')} Run sandbox demo</button></div></div>
     <div class="hero-art"><img src="/assets/guardian.png" width="1254" height="1254" alt="Clay robot guardian holding an orange shield"><span class="art-label">YOUR FRIENDLY BUDGET ENFORCER / 001</span></div></section>
     <div class="section-top"><h2 class="section-title">Session at a glance <small>SIMULATED USDC</small></h2>${sessionPicker()}</div>
-    ${stats()}${runwayPanel()}
+    ${stats()}${runwayPanel()}${discoveryPanel()}
     <div class="main-grid"><section class="panel"><div class="panel-head"><h2>${icon('terminal')} Agent session</h2>${badge(report?.status || 'READY')}</div>${sessionBody()}<div class="panel-foot"><span>${esc(report ? report.session_id : 'WAITING FOR YOUR FIRST MISSION')}</span><a class="text-button" href="${report ? '#sessions/' + esc(report.session_id) : '#sessions'}">View session ${icon('arrow')}</a></div></section>
     <section class="panel"><div class="panel-head"><h2>${icon('shield')} Spending guardrails</h2><span class="status-badge">ENFORCED</span></div><div class="policy-preview"><img src="/assets/vault.png" alt="Clay vault with an orange door" width="1254" height="1254"><div><div class="policy-line"><span>Session cap</span><strong>${money(state.policy.session_cap)} USDC</strong></div><div class="policy-line"><span>Per-call cap</span><strong>${money(state.policy.per_call_cap)} USDC</strong></div><div class="policy-line"><span>Payment mode</span><strong class="orange">Sandbox</strong></div></div></div><div class="policy-note">Limits checked before authorization. Every decision recorded.</div><div class="panel-foot"><span>POLICY LIVES OUTSIDE THE MODEL</span><a class="text-button" href="#policy">View policy ${icon('arrow')}</a></div></section></div>
     ${activity()}`;
@@ -157,6 +183,16 @@ function eventMessage(event) {
     case 'LOCAL_TASK_COMPLETED': return `${d.task_id} completed with caller-approved local extraction.`;
     case 'RUNWAY_CHECK': return `Runway ${d.forecast.state} / ${d.forecast.reason || 'advisory check'}${d.forecast.shortfall && d.forecast.shortfall !== '0' ? ' / short by ' + money(d.forecast.shortfall) + ' USDC' : ''}`;
     case 'RUNWAY_STATE_CHANGED': return `${d.from || 'INITIAL'} → ${d.to} / ${d.forecast.tasksCompleted ?? 0} tasks complete / ${d.forecast.projected ? money(d.forecast.projected.p90) + ' USDC projected at p90' : 'projection unavailable'}`;
+    case 'DISCOVERY_STARTED': return `Vendor scout started → ${d.query || 'current mission'}`;
+    case 'DISCOVERY_PLAN': return `Search plan → ${(d.queries || []).join(' / ')}`;
+    case 'DISCOVERY_SEARCH_STARTED': return `Searching Bazaar → ${d.query || ''}`;
+    case 'DISCOVERY_SEARCH_FINISHED': return `${d.query || 'Search'} → ${d.status === 'FAILED' ? 'search unavailable' : (d.count ?? 0) + ' candidates'}`;
+    case 'DISCOVERY_MODEL_RESPONSE': return `Scout ${d.stage || 'assessment'} / ${d.discovery?.usage?.input_tokens || 0} input, ${d.discovery?.usage?.output_tokens || 0} output, ${d.discovery?.usage?.thought_tokens || 0} thought tokens (cumulative)`;
+    case 'DISCOVERY_CANDIDATES': return `Comparing ${(d.candidates || []).length} vendors against task fit and spending limits.`;
+    case 'DISCOVERY_RECOMMENDED': return d.summary || 'Vendor recommendation recorded. No payment authorized.';
+    case 'DISCOVERY_FINISHED': return `Scout finished → ${d.status || d.discovery?.status || 'results saved'}`;
+    case 'DISCOVERY_FAILED': return d.error || d.message || 'Vendor scout failed. No discovery purchase was made.';
+    case 'DISCOVERY_CANCELLED': return 'Vendor scout stopped. Available results are preserved.';
     case 'RUN_STARTED': return `Agent started → ${d.model}`;
     case 'MODEL_RESPONSE': return `Model turn ${d.turn} / ${d.cumulative_usage?.input_tokens || 0} input tokens`;
     case 'TOOL_RESULT': return `${d.name} → ${d.code}`;
@@ -175,13 +211,14 @@ function activity() {
   if (filter === 'payments') events = events.filter(e=>['RESERVED','AUTHORIZING','SETTLED','RELEASED','DENIED','PAYMENT_REFUSED','PAYMENT_PENDING','PAYMENT_UNCERTAIN','SETTLEMENT_MISMATCH'].includes(e.kind));
   if (filter === 'blocked') events = events.filter(e=>e.kind === 'DENIED' || e.kind === 'PAYMENT_REFUSED');
   if (filter === 'runway') events = events.filter(e=>e.kind.startsWith('RUNWAY_'));
-  return `<section class="activity terminal" aria-label="Agent activity"><div class="terminal-head"><div class="terminal-title"><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span><h2 class="section-title">Activity stream</h2></div><div class="terminal-filter" role="group" aria-label="Activity filter">${['all','payments','blocked','runway'].map(f=>`<button data-filter="${f}" class="${filter === f ? 'active' : ''}" aria-pressed="${filter === f}">${f.toUpperCase()}</button>`).join('')}</div></div><div class="terminal-log" tabindex="0" aria-label="Audit events">${events.length ? events.map(e=>`<div class="log-line"><span class="log-time">${time(e.time)}</span><span class="log-kind ${e.kind.includes('DENIED') || e.kind.includes('REFUSED') || e.kind.includes('ERROR') || ['SHORTFALL','TIGHT'].includes(e.data.to) ? 'warn' : ''}">${esc(e.kind)}</span><span class="log-data">${esc(eventMessage(e))}</span></div>`).join('') : `<div class="terminal-empty"><span class="prompt">governor@local:~$</span> ${report ? 'No matching events.' : 'awaiting mission'}<br>${report ? 'Choose another filter to inspect the session.' : 'Runtime ready. Budget gate initialized.<br>Launch an agent to see its decisions here.'}<br><span class="prompt">&gt;</span> <span class="cursor"></span></div>`}</div><div class="terminal-foot"><span>${report?.status === 'RUNNING' ? '● RUNNING' : '○ IDLE'} / ${events.length} EVENTS</span><span>PAYMENTS SIMULATED · NO ON-CHAIN TRANSACTIONS</span></div></section>`;
+  if (filter === 'discovery') events = events.filter(e=>e.kind.startsWith('DISCOVERY_'));
+  return `<section class="activity terminal" aria-label="Agent activity"><div class="terminal-head"><div class="terminal-title"><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span><h2 class="section-title">Activity stream</h2></div><div class="terminal-filter" role="group" aria-label="Activity filter">${['all','payments','blocked','runway','discovery'].map(f=>`<button data-filter="${f}" class="${filter === f ? 'active' : ''}" aria-pressed="${filter === f}">${f.toUpperCase()}</button>`).join('')}</div></div><div class="terminal-log" tabindex="0" aria-label="Audit events">${events.length ? events.map(e=>`<div class="log-line"><span class="log-time">${time(e.time)}</span><span class="log-kind ${e.kind.includes('DENIED') || e.kind.includes('REFUSED') || e.kind.includes('ERROR') || ['SHORTFALL','TIGHT'].includes(e.data.to) ? 'warn' : ''}">${esc(e.kind)}</span><span class="log-data">${esc(eventMessage(e))}</span></div>`).join('') : `<div class="terminal-empty"><span class="prompt">governor@local:~$</span> ${report ? 'No matching events.' : 'awaiting mission'}<br>${report ? 'Choose another filter to inspect the session.' : 'Runtime ready. Budget gate initialized.<br>Launch an agent to see its decisions here.'}<br><span class="prompt">&gt;</span> <span class="cursor"></span></div>`}</div><div class="terminal-foot"><span>${report?.status === 'RUNNING' ? '● RUNNING' : '○ IDLE'} / ${events.length} EVENTS</span><span>PAYMENTS SIMULATED · NO ON-CHAIN TRANSACTIONS</span></div></section>`;
 }
 function sessionsView() {
   const id = route().id;
   if (id) {
     if (!report || report.session_id !== id) return '<div class="empty">This session is unavailable. Return to the session list or inspect its policy using the CLI.</div>';
-    return `<div class="toolbar"><a class="text-button" href="#sessions">← All sessions</a><div class="wallet-actions"><a class="button button-outline compact" href="/api/sessions/${esc(id)}?format=json" download>${icon('download')} Audit JSON</a><a class="button button-outline compact" href="/api/sessions/${esc(id)}?format=csv" download>${icon('download')} Expenses CSV</a></div></div><section class="panel"><div class="panel-head"><h2>${esc(id)}</h2>${badge(report.status)}</div>${sessionBody()}</section><div class="section-top"><h2 class="section-title">Session budget <small>SIMULATED USDC</small></h2></div>${stats()}${runwayPanel()}${report.result?.answer ? `<section class="answer"><h2>${icon('terminal')} Agent response</h2><p>${esc(report.result.answer)}</p></section>` : ''}${attempts()}${activity()}`;
+    return `<div class="toolbar"><a class="text-button" href="#sessions">← All sessions</a><div class="wallet-actions"><a class="button button-outline compact" href="/api/sessions/${esc(id)}?format=json" download>${icon('download')} Audit JSON</a><a class="button button-outline compact" href="/api/sessions/${esc(id)}?format=csv" download>${icon('download')} Expenses CSV</a></div></div><section class="panel"><div class="panel-head"><h2>${esc(id)}</h2>${badge(report.status)}</div>${sessionBody()}</section><div class="section-top"><h2 class="section-title">Session budget <small>SIMULATED USDC</small></h2></div>${stats()}${runwayPanel()}${discoveryPanel()}${report.result?.answer ? `<section class="answer"><h2>${icon('terminal')} Agent response</h2><p>${esc(report.result.answer)}</p></section>` : ''}${attempts()}${activity()}`;
   }
   const sessions = state.sessions.filter(s=>(s.task + s.session_id).toLowerCase().includes(search.toLowerCase()));
   return `<p class="subheading">Every task has its own budget, persistent holds, and a record of every decision.</p><div class="toolbar"><input id="session-search" type="search" placeholder="Search sessions…" aria-label="Search sessions" value="${esc(search)}"><span class="fine-print">${state.sessions.length} LOCAL SESSIONS</span></div><div class="session-list">${sessions.length ? sessions.map(s=>`<button class="session-row" data-session="${esc(s.session_id)}" ${s.compatible ? '' : 'disabled'}><span class="row-icon">${icon('terminal')}</span><span><span class="row-title">${esc(s.task)}</span><span class="row-sub">${esc(s.session_id)} ${s.compatible ? '' : '· Policy changed — inspect with CLI'}</span></span><span class="row-date">${date(s.created_at)}</span>${icon('chevron')}</button>`).join('') : `<div class="panel empty"><img src="/assets/guardian.png" alt=""><strong>${search ? 'No matching sessions.' : 'A clean slate.'}</strong>${search ? 'Try another search.' : 'Your next idea starts with a mission.'}${search ? '' : '<br><button class="text-button" data-action="launch">Launch your first agent ↗</button>'}</div>`}</div>`;
@@ -193,7 +230,7 @@ function attempts() {
 function servicesView() {
   const names = {summary:'Document summary', 'price-change':'The moving price', overpriced:'Over the limit', timeout:'The lost response'};
   const details = {summary:'A paid extractive summary. Returns the opening sentences of your document.', 'price-change':'An adversarial seller that advertises one price and asks for more at checkout.', overpriced:'A deliberately expensive service for exercising the per-call spending cap.', timeout:'A payment with an unknown settlement outcome. Its funds stay held.'};
-  return `<p class="subheading">An allowlisted sandbox catalog. Try a service to see how your agent handles a purchase, a refusal, or an uncertain settlement.</p><div class="service-grid">${state.services.map(s=>`<article class="service-card"><div class="service-card-top"><span class="service-icon">${icon(s.id === 'summary' ? 'code' : s.id === 'timeout' ? 'clock' : 'shield')}</span><span class="status-badge">${s.id === 'summary' ? 'SANDBOX SERVICE' : 'TEST SCENARIO'}</span></div><h2>${names[s.id] || esc(s.id)}</h2><p>${details[s.id] || esc(s.description)}</p><div class="service-price"><span>${money(s.advertised_amount)} <small>USDC / CALL · ADVERTISED</small></span><button class="text-button" data-service="${esc(s.id)}" ${disabled()}>Try it ${icon('arrow')}</button></div></article>`).join('')}</div><div class="info-banner">All services use the simulated payment adapter. These purchases do not move wallet funds. Gemini model costs are billed separately.</div>`;
+  return `<p class="subheading">Find paid APIs with a Gemini scout. It searches Bazaar in parallel and ranks vendors for your task, network and spending limits.</p><section class="panel bazaar-search-panel"><div class="panel-head"><h2>${icon('blocks')} Search Bazaar</h2><span class="status-badge">SOLANA DEVNET</span></div><form id="discovery-form" class="discovery-form"><label for="discovery-query">WHAT SHOULD THE VENDOR DO?</label><div class="discovery-search-row"><input id="discovery-query" type="search" maxlength="400" required placeholder="e.g. Summarize a document within 0.003 USDC" value="${esc(discoveryQuery)}"><button class="button button-primary" type="submit" ${disabled()}>${icon('blocks')} ${discoverySubmitting ? 'Starting…' : 'Find vendors'}</button></div><p class="fine-print">Search does not buy anything. Gemini inference is billed separately. ${state.active_session ? 'A session is active; wait for it to finish before starting a standalone search.' : 'The search plan, parallel branches and recommendation appear live in the session.'}</p>${discoveryError ? `<p class="form-error" role="alert">${esc(discoveryError)}</p>` : ''}</form></section>${discoveryPanel()}<div class="section-top"><h2 class="section-title">Local sandbox services <small>MOCK PAYMENTS</small></h2></div><p class="subheading sandbox-description">An allowlisted sandbox catalog. Try a service to see how your agent handles a purchase, a refusal, or an uncertain settlement.</p><div class="service-grid">${state.services.map(s=>`<article class="service-card"><div class="service-card-top"><span class="service-icon">${icon(s.id === 'summary' ? 'code' : s.id === 'timeout' ? 'clock' : 'shield')}</span><span class="status-badge">${s.id === 'summary' ? 'SANDBOX SERVICE' : 'TEST SCENARIO'}</span></div><h2>${names[s.id] || esc(s.id)}</h2><p>${details[s.id] || esc(s.description)}</p><div class="service-price"><span>${money(s.advertised_amount)} <small>USDC / CALL · ADVERTISED</small></span><button class="text-button" data-service="${esc(s.id)}" ${disabled()}>Try it ${icon('arrow')}</button></div></article>`).join('')}</div><div class="info-banner">Local sandbox services use the simulated payment adapter. Their purchases do not move wallet funds. Gemini model costs are billed separately.</div>`;
 }
 function walletView() {
   const w = wallet;
@@ -207,7 +244,7 @@ function policyView() {
 }
 function render(force = false) {
   const {view} = route();
-  const signature = JSON.stringify([state, report, view, route().id, filter, search, wallet, walletLoading, submitting, connected]);
+  const signature = JSON.stringify([state, report, view, route().id, filter, search, wallet, walletLoading, submitting, connected, discoveryQuery, discoveryError, discoverySubmitting]);
   if (!force && signature === lastRender) return;
   lastRender = signature;
   const log = $('.terminal-log');
@@ -215,15 +252,17 @@ function render(force = false) {
   const atBottom = !log || log.scrollHeight - log.scrollTop - log.clientHeight < 30;
   $('#breadcrumb').textContent = labels[view];
   $('#page-title').textContent = titles[view];
-  $('#page-eyebrow').textContent = {overview:'THE CONTROL ROOM', sessions:'MISSION LOG', services:'APPROVED SERVICE CATALOG', wallet:'FUNDS & NETWORK', policy:'THE RULES OF ENGAGEMENT'}[view];
+  $('#page-eyebrow').textContent = {overview:'THE CONTROL ROOM', sessions:'MISSION LOG', services:'BAZAAR / VENDOR DISCOVERY', wallet:'FUNDS & NETWORK', policy:'THE RULES OF ENGAGEMENT'}[view];
   $$('nav [data-view]').forEach(link => {link.classList.toggle('active', link.dataset.view === view); if(link.dataset.view === view) link.setAttribute('aria-current','page'); else link.removeAttribute('aria-current');});
   $('#new-session').disabled = !!disabled();
   if (!state) { $('#view-content').innerHTML = '<div class="loading">Connecting to Governor<span class="cursor"></span></div>'; return; }
-  const searchFocused = document.activeElement?.id === 'session-search';
+  const focusedInput = ['session-search','discovery-query'].includes(document.activeElement?.id) ? {id:document.activeElement.id,start:document.activeElement.selectionStart,end:document.activeElement.selectionEnd} : null;
+  const expandedVendors = $('.more-vendors')?.open;
   $('#view-content').innerHTML = ({overview, sessions:sessionsView, services:servicesView, wallet:walletView, policy:policyView}[view])();
   const nextLog = $('.terminal-log');
   if(nextLog) nextLog.scrollTop = atBottom ? nextLog.scrollHeight : scroll;
-  if (searchFocused) { $('#session-search')?.focus(); }
+  if (focusedInput) { const input = $('#' + focusedInput.id); input?.focus({preventScroll:true}); input?.setSelectionRange(focusedInput.start,focusedInput.end); }
+  if (expandedVendors && $('.more-vendors')) $('.more-vendors').open = true;
 }
 async function refresh() {
   if (refreshing) return;
@@ -253,6 +292,7 @@ function openLauncher(task = '') {
   $('#task').value = task;
   $('#task-list').value = '';
   $('#allow-local').checked = false;
+  $('#discover-vendors').checked = true;
   $('#launch-policy').innerHTML = `<div><span>SESSION CAP</span> ${money(state.policy.session_cap)} USDC</div><div><span>PER CALL</span> ${money(state.policy.per_call_cap)} USDC</div>`;
   modeChanged();
   $('#launch-dialog').showModal();
@@ -262,6 +302,7 @@ function modeChanged() {
   const demo = $('#run-mode').value !== 'gemini';
   $('#task-list').disabled = demo;
   $('#allow-local').disabled = demo;
+  $('#discover-vendors').disabled = demo;
   $('#task').disabled = demo;
   $('#task').required = !demo;
   $$('.task-presets button').forEach(button => {button.disabled = demo;});
@@ -275,6 +316,7 @@ async function startRun(mode, task = '') {
   render();
   try {
     const payload = {mode,task};
+    if (mode === 'gemini') payload.discover = $('#discover-vendors').checked;
     if (mode === 'gemini' && $('#task-list').value.trim()) {
       payload.task_list = $('#task-list').value.split('\n').map(line=>line.trim()).filter(Boolean).map((line,i)=>{
         const separator = line.indexOf('|');
@@ -294,6 +336,28 @@ async function startRun(mode, task = '') {
   } finally {
     submitting = false;
     $('#submit-run').disabled = false;
+    render();
+  }
+}
+async function startDiscovery() {
+  if (discoverySubmitting || submitting) return;
+  const query = discoveryQuery.trim();
+  if (!query) { discoveryError = 'Describe the service you need.'; render(); return; }
+  discoverySubmitting = true;
+  discoveryError = '';
+  render();
+  try {
+    const result = await api('/api/discovery', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query})});
+    selected = result.session_id;
+    storage.set('governor.session', selected);
+    location.hash = 'sessions/' + selected;
+    toast('Vendor scout launched. Watch its searches and shortlist live.');
+    await refresh();
+  } catch (error) {
+    discoveryError = error.message;
+    if (route().view !== 'services') toast(error.message);
+  } finally {
+    discoverySubmitting = false;
     render();
   }
 }
@@ -335,8 +399,10 @@ document.addEventListener('change', event => {
   if(event.target.id === 'session-select') {selected = event.target.value; report = null; refresh();}
 });
 document.addEventListener('input', event => {
+  if(event.target.id === 'discovery-query') { discoveryQuery = event.target.value; return; }
   if(event.target.id === 'session-search') {search = event.target.value; render();}
 });
+document.addEventListener('submit', event=>{if(event.target.id === 'discovery-form') {event.preventDefault(); if(event.target.reportValidity()) startDiscovery();}});
 $('#new-session').addEventListener('click',()=>openLauncher());
 $('#close-dialog').addEventListener('click',()=>$('#launch-dialog').close());
 $('#run-mode').addEventListener('change', modeChanged);
