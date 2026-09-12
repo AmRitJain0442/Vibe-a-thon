@@ -35,6 +35,10 @@ The server loads only the `.env` in its working directory.
   open the explorer. A missing wallet or failed RPC does not become a zero balance.
 - **Policy:** inspect the configured caps, turn/tool limits and run deadline.
 - **Themes:** light/orange and black/orange, remembered locally across reloads.
+- **Budget Runway:** optional caller task list, p50/p90 cost scenarios, early warnings,
+  planning options, task progress, and a runway activity filter. **Try demo** exercises
+  early local fallback while the original sandbox demo preserves the hard-stop beat.
+  See [runway details](runway.md).
 
 Only one dashboard run executes at a time. The page polls the ledger while open;
 closing the page does not cancel a run. Stopping the server can interrupt the
@@ -70,7 +74,7 @@ theme persistence, task launch, refusal filters, report download, session search
 and live wallet reads. All five views were checked at 360, 390, 768, 1024 and 1440px
 without horizontal page overflow or browser console errors. A live Gemini task
 returned the 10000 atomic USDC budget through the UI, and the wallet view verified
-20 devnet USDC. The full suite passes 65 tests.
+20 devnet USDC. The full suite now passes 90 tests, including Budget Runway coverage.
 
 See [artwork.md](artwork.md) for the exact built-in imagegen prompts and font
 license locations. The transparent PNGs are packaged at

@@ -23,6 +23,14 @@ an offline demo, session budgets and activity, JSON/CSV downloads, and live devn
 wallet balances. No frontend build step is required.
 See [dashboard usage and access boundary](docs/dashboard.md).
 
+## Budget Runway
+
+`governor runway-demo` demonstrates an early p90 shortfall warning and finishes ten
+caller-listed items through approved local fallback, with budget left over.
+For live Gemini runs, pass `--task-list tasks.json` or add the optional task list in
+the dashboard launcher. Runway forecasts are advisory; spending caps are unchanged.
+See [runway inputs, confidence and demo](docs/runway.md).
+
 ## Setup
 
 Python 3.12 or newer; tested with Python 3.14. From the repository root:

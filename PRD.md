@@ -87,6 +87,8 @@ Makes client-side enforcement *necessary* rather than merely present.
 - **Velocity cap.** Spend-per-minute limit on top of the total cap, to catch runaway loops that individually clear every check.
 - **Crash recovery.** Kill the agent mid-payment; on restart the hold is still on disk and the cap still holds.
 - **Expense report.** CSV of every settled payment with explorer links, emitted on exit.
+- **Budget Runway.** Continuously project whether available budget covers the caller's remaining
+  work, with early warnings and options before a hard-cap refusal. See §6.1 and FR-16–FR-20.
 
 ### V2 — routing and choice
 
@@ -103,6 +105,74 @@ Turns enforcement into optimization.
 - **Budget slicing.** A parent agent with $1 spawns children with $0.20 each; children cannot exceed their slice, and the parent cannot exceed the envelope.
 
 ---
+
+## 6.1 Budget Runway — V1 planning layer
+
+**One line:** The agent continuously projects whether its remaining budget will cover its
+remaining work, and raises the alarm early enough to do something about it.
+
+A hard cap only speaks at the boundary. Runway uses observed task costs to identify trouble
+while funds remain, so the agent can propose a cheaper route, a reduced scope, a cap increase,
+or a prioritized subset instead of unexpectedly stopping halfway through the job.
+
+The conceptual arithmetic is:
+
+```text
+burnRate      = spentAtomic / tasksCompleted
+projectedCost = burnRate * tasksRemaining
+runwayTasks   = remainingAtomic / burnRate
+shortfall     = max(0, projectedCost - remainingAtomic)
+```
+
+`remainingAtomic` is the ledger's **available** amount after settled spend and outstanding
+holds. Operational forecasts use observed **p50 and p90** costs per completed task rather
+than the mean alone. State is driven by the p90 scenario:
+
+| State | Condition | Agent behaviour |
+|---|---|---|
+| `UNKNOWN` | Fewer than 3 cost samples, unknown remaining workload, or insufficient samples for a remaining task type | Explain uncertainty; never invent a completion projection |
+| `HEALTHY` | p90 projected cost ≤ 70% of available budget | Proceed normally |
+| `TIGHT` | 70% < p90 projected cost ≤ available budget | Warn; prefer approved cheaper routes |
+| `SHORTFALL` | p90 projected cost > available budget | Surface options before the cap is reached |
+
+Track variance and keep cost samples per task type. A cheap FX task must not dilute a more
+expensive summary forecast. With a known mixed workload, sum per-type projections; without
+a known mix, use a conservative envelope of observed type costs. Fewer than three samples
+produce no burn-rate projection or affordable-task estimate. If only the remaining workload
+is unknown, show affordable calls from observed costs without a completion projection,
+shortfall, or `SHORTFALL` classification. Empirical quantiles are planning scenarios, not
+calibrated confidence guarantees or predictions of a seller's future quote.
+
+Keep paid cost observations separate from zero-payment local completions. Local work advances
+the completed-task count, but must not dilute the paid baseline for later work that requires
+a paid provider. The minimum sample threshold applies to these known paid-cost observations.
+
+The caller supplies an ordered, immutable task list. A text item is complete after a matching
+settled service result or a caller-approved local extractive result. Repeated purchases do not
+count twice; refused and uncertain attempts do not complete a paid task. Local completion
+with an outstanding paid attempt is not a known-cost sample. Caller order defines priority.
+
+On `SHORTFALL`, expose options with their basis:
+
+- Route eligible remaining items locally; automatic selection is allowed only when the caller
+  has already accepted this extractive fallback. Do not invent quality deltas or quote savings.
+- Ask for fresh quotes before selecting a cheaper paid provider.
+- Request reduced scope or a prioritized subset whose projected cost actually fits.
+- Request an increase equal to the projected shortfall. This is never a self-granted cap change.
+
+Runway is **advisory only**. It cannot authorize, reject, or change a ledger decision. No
+unilateral task-list rewrite, quality reduction, or cap increase is permitted. A forecast
+failure reports `UNKNOWN` while the original ledger enforcement continues.
+
+**Current offline demo:** with a 10000-atomic cap, three summaries cost 6000. Seven remaining
+items project to 14000 at p90 against 4000 available: a 10000-atomic shortfall. The caller has
+approved local extraction, so the seven remaining items finish locally. Final result:
+10/10 complete, 6000 simulated spend, 4000 spare. A separate overpriced request is still
+refused before authorization. This demonstrates both planning and hard enforcement.
+
+**Non-goals:** forecasting seller quotes, automatically raising caps, inventing quality
+scores, or rewriting the plan without caller permission. Gemini inference and hosting costs
+remain separate from the simulated USDC purchase allowance.
 
 ## 7. Core architecture
 
@@ -217,6 +287,19 @@ Numbered so they can be tested individually.
 
 - **FR-14** An unreachable RPC degrades gracefully; it does not crash the agent or bypass a check.
 - **FR-15** A malformed or missing 402 challenge results in refusal, not a guess.
+
+**Budget Runway (V1)**
+
+- **FR-16** Runway is recomputed after every settled payment and every refusal, including
+  returned cached refusals. Holds, releases and approved local completions also refresh it.
+- **FR-17** No projection is emitted below the minimum sample threshold; state is `UNKNOWN`.
+- **FR-18** State transitions are written to the decision log with the inputs and causal
+  event that produced them. Inputs are sufficient to replay the calculation.
+- **FR-19** Projection is advisory only: it never authorizes a payment the ledger would refuse,
+  and never blocks one the ledger would allow. Forecast failures cannot change this boundary.
+- **FR-20** `tasksRemaining` comes from the caller's task list. When unknown, report
+  `runwayTasks` only once samples are sufficient, suppress completion projections and shortfall,
+  and keep state `UNKNOWN`. Never infer the total workload from the model's prose.
 
 ---
 
