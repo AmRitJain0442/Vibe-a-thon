@@ -46,9 +46,9 @@ def parser():
     return root
 
 
-def command(args, executable, client, sid, task, mode, output=None):
+def mcp_configuration(args, client, sid):
     mcp_args = ["-m", "governor.codex_mcp", "--url", client.origin, "--session", sid]
-    configuration = (
+    return (
         "mcp_servers.governor={command="
         + json.dumps(sys.executable)
         + ",args="
@@ -58,6 +58,10 @@ def command(args, executable, client, sid, task, mode, output=None):
         + json.dumps(args.tool_approval)
         + "}"
     )
+
+
+def command(args, executable, client, sid, task, mode, output=None):
+    configuration = mcp_configuration(args, client, sid)
     cmd = [executable]
     if args.headless:
         cmd.append("exec")
