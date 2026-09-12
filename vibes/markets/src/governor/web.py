@@ -115,7 +115,11 @@ class Dashboard:
 
     def report(self, session_id: str) -> dict:
         session_name(session_id)
-        report = self.ledger.report(session_id)
+        # Snapshot liveness with the ledger: a worker finishing between these reads
+        # must not make a completed run appear interrupted.
+        with self.lock:
+            active = self.active == session_id
+            report = self.ledger.report(session_id)
         report["task"] = self.ledger.task(session_id)
         report["result"] = None
         path = self.settings.data_dir / "reports" / f"{session_id}.json"
@@ -126,8 +130,6 @@ class Dashboard:
                     report["result"] = saved.get("result")
             except (OSError, ValueError):
                 pass  # The SQLite ledger remains the authority.
-        with self.lock:
-            active = self.active == session_id
         finished = next(
             (e for e in reversed(report["events"]) if e["kind"] == "RUN_FINISHED"), None
         )

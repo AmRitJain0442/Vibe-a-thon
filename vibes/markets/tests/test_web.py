@@ -137,6 +137,27 @@ def test_interrupted_run_does_not_appear_live(dashboard):
     assert json.loads(client.get("/api/state").text)["active_session"] is None
 
 
+def test_worker_finishing_during_report_is_not_labelled_interrupted(dashboard, monkeypatch):
+    app, _ = dashboard
+    app.ledger.start("fast-run", "Fast task")
+    app.active = "fast-run"
+    original = app.ledger.report
+    finished = False
+
+    def snapshot_then_finish(sid):
+        nonlocal finished
+        snapshot = original(sid)
+        if not finished:
+            finished = True
+            app.ledger.record(sid, "RUN_FINISHED", {"status": "COMPLETED"})
+            app.active = None
+        return snapshot
+
+    monkeypatch.setattr(app.ledger, "report", snapshot_then_finish)
+    assert app.report("fast-run")["status"] == "RUNNING"
+    assert app.report("fast-run")["status"] == "COMPLETED"
+
+
 def test_runway_demo_over_http_finishes_the_caller_plan(dashboard):
     _, client = dashboard
     response = client.post("/api/runs", json={"mode": "runway-demo"})
