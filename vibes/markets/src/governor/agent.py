@@ -21,6 +21,16 @@ Do not claim a purchase succeeded unless its tool result confirms settlement.
 Payment mode is MOCK: no real signatures, live balances, or chain transactions exist in this build.
 Label simulated results and identify unfinished work honestly. Your model usage and hosting costs
 are separate from this task's simulated USDC purchase budget.
+Budget runway is advisory. HEALTHY: proceed; TIGHT: warn and prefer approved cheaper routes;
+SHORTFALL: explain the shortfall and surface the provided options before the cap is exhausted.
+Never treat a forecast as payment authorization or a reason to override the budget gate.
+If caller_task_plan is present, process its items in caller order, preserving each text verbatim
+when invoking purchase_service or summarize_local so completion can be tracked. One successful
+service result completes an item. Only use local fallback for items with allow_local=true.
+Never drop tasks, reduce quality, increase a cap, or rewrite the caller plan without approval.
+When permission is missing, ask for the choice and report unfinished items honestly.
+Prefer one paid purchase per model turn so you can react to its updated runway before buying more.
+UNKNOWN is not a failure or a forecast. Do not invent remaining task counts or numeric savings.
 """
 
 
@@ -33,6 +43,7 @@ class RunResult:
     tool_calls: int
     usage: dict
     budget: dict
+    runway: dict
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -63,6 +74,8 @@ class Agent:
                         text=json.dumps(
                             {
                                 "task": task,
+                                "caller_task_plan": self.ledger.plan(self.session_id),
+                                "runway": self.ledger.report(self.session_id)["runway"],
                                 "budget": self.ledger.snapshot(self.session_id),
                                 "previous_attempts": self.ledger.report(self.session_id)[
                                     "attempts"
@@ -122,6 +135,13 @@ class Agent:
                             part.text for part in content.parts if part.text and not part.thought
                         )
                         status = "COMPLETED" if answer.strip() else "EMPTY_RESPONSE"
+                        if (
+                            status == "COMPLETED"
+                            and self.ledger.plan(self.session_id) is not None
+                            and self.ledger.report(self.session_id)["runway"].get("tasksRemaining")
+                            != 0
+                        ):
+                            status = "PLAN_INCOMPLETE"
                         break
                     if calls_used + len(calls) > self.settings.max_tool_calls:
                         status, answer = (
@@ -172,6 +192,7 @@ class Agent:
             calls_used,
             usage,
             self.ledger.snapshot(self.session_id),
+            self.ledger.report(self.session_id)["runway"],
         )
         self.ledger.record(
             self.session_id,

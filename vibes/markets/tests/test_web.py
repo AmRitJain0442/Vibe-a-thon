@@ -135,3 +135,28 @@ def test_interrupted_run_does_not_appear_live(dashboard):
     assert result["status"] == "INTERRUPTED"
     assert result["budget"]["held"] == "2000"
     assert json.loads(client.get("/api/state").text)["active_session"] is None
+
+
+def test_runway_demo_over_http_finishes_the_caller_plan(dashboard):
+    _, client = dashboard
+    response = client.post("/api/runs", json={"mode": "runway-demo"})
+    assert response.status_code == 202
+    session_id = response.json()["session_id"]
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        report = client.get(f"/api/sessions/{session_id}").json()
+        if report["status"] != "RUNNING":
+            break
+        time.sleep(0.1)
+    assert report["status"] == "COMPLETED"
+    assert report["runway"]["tasksCompleted"] == 10
+    assert report["runway"]["tasksRemaining"] == 0
+    assert report["budget"]["available"] == "4000"
+    assert len(report["task_plan"]) == 10
+
+
+def test_browser_cannot_replace_a_scripted_demo_plan(dashboard):
+    _, client = dashboard
+    assert (
+        client.post("/api/runs", json={"mode": "runway-demo", "task_list": []}).status_code == 400
+    )

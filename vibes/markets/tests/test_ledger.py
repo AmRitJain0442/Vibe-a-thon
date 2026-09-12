@@ -20,7 +20,8 @@ def test_holds_and_exact_cap(ledger):
     denied = ledger.reserve("session", "c", "summary", "1")
     assert denied.result["code"] == "SESSION_CAP_EXCEEDED"
     assert ledger.snapshot("session")["available"] == "0"
-    assert ledger.report("session")["events"][-1]["kind"] == "DENIED"
+    decisions = [e for e in ledger.report("session")["events"] if e["kind"] == "DENIED"]
+    assert decisions[-1]["data"]["code"] == "SESSION_CAP_EXCEEDED"
 
 
 def test_commit_is_idempotent_and_does_not_clamp(ledger):

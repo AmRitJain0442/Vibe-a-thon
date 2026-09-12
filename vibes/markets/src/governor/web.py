@@ -18,12 +18,13 @@ from dotenv import load_dotenv
 from governor.agent import Agent
 from governor.cli import expense_csv, session_name, write_audit
 from governor.config import ConfigurationError, Settings
-from governor.demo import TASK, DemoModel
+from governor.demo import RUNWAY_PLAN, RUNWAY_TASK, TASK, DemoModel, RunwayDemoModel
 from governor.gemini import GeminiModel
 from governor.ledger import Ledger, LedgerError
 from governor.mock import MockPaymentAdapter
 from governor.networks import DEVNET_RPC
 from governor.payments import PaymentGate
+from governor.runway import validate_plan
 from governor.solana_wallet import DevnetRPC, WalletError, load_wallet
 from governor.tools import ToolRegistry
 
@@ -37,6 +38,12 @@ class BusyError(RuntimeError):
 class PacedDemo(DemoModel):
     async def generate(self, *args):
         await asyncio.sleep(0.25)
+        return await super().generate(*args)
+
+
+class PacedRunwayDemo(RunwayDemoModel):
+    async def generate(self, *args):
+        await asyncio.sleep(0.5)
         return await super().generate(*args)
 
 
@@ -93,12 +100,19 @@ class Dashboard:
         return report
 
     def start(self, payload: dict) -> str:
-        if not isinstance(payload, dict) or set(payload) - {"mode", "task"}:
-            raise ValueError("Expected mode and task only.")
+        if not isinstance(payload, dict) or set(payload) - {"mode", "task", "task_list"}:
+            raise ValueError("Expected mode, task, and optional task_list only.")
         mode = payload.get("mode")
-        if mode not in ("demo", "gemini"):
+        if mode not in ("demo", "gemini", "runway-demo"):
             raise ValueError("Choose Gemini or the offline demo.")
-        task = TASK if mode == "demo" else payload.get("task")
+        task = (
+            RUNWAY_TASK
+            if mode == "runway-demo"
+            else (TASK if mode == "demo" else payload.get("task"))
+        )
+        if mode != "gemini" and payload.get("task_list") is not None:
+            raise ValueError("Scripted demos use their own fixed task lists.")
+        plan = validate_plan(RUNWAY_PLAN if mode == "runway-demo" else payload.get("task_list"))
         if not isinstance(task, str) or not 1 <= len(task.strip()) <= 20000:
             raise ValueError("Enter a task between 1 and 20,000 characters.")
         if mode == "gemini":
@@ -107,7 +121,7 @@ class Dashboard:
             if self.active:
                 raise BusyError("An agent is already running. Wait for it to finish.")
             session_id = f"{mode}-{uuid.uuid4().hex[:10]}"
-            self.ledger.start(session_id, task.strip())
+            self.ledger.start(session_id, task.strip(), plan=plan)
             self.active = session_id
             worker = threading.Thread(
                 target=self._run, args=(session_id, task.strip(), mode), daemon=True
@@ -120,8 +134,8 @@ class Dashboard:
             model = None
             try:
                 settings = self.settings
-                if mode == "demo":
-                    model = PacedDemo()
+                if mode in ("demo", "runway-demo"):
+                    model = PacedRunwayDemo() if mode == "runway-demo" else PacedDemo()
                     settings = settings.model_copy(update={"model": "offline-scripted-demo"})
                 else:
                     model = GeminiModel(settings)

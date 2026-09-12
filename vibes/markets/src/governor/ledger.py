@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from governor import runway
 from governor.config import BudgetPolicy, atomic
 
 
@@ -82,19 +83,103 @@ class Ledger:
             raise LedgerError("session policy differs from configuration; refusing to resume")
         return row
 
-    @staticmethod
-    def _event(db, session_id, kind, data):
-        db.execute(
+    def _event(self, db, session_id, kind, data):
+        seq = db.execute(
             "INSERT INTO events(session_id,time,kind,data) VALUES (?,?,?,?)",
             (session_id, datetime.now(UTC).isoformat(), kind, json.dumps(data)),
-        )
+        ).lastrowid
+        if kind in {
+            "SESSION_CREATED",
+            "TASK_PLAN",
+            "SETTLED",
+            "DENIED",
+            "RESERVED",
+            "RELEASED",
+            "LOCAL_TASK_COMPLETED",
+            "REFUSAL_RETURN",
+        }:
+            self._runway_check(db, session_id, kind, seq)
 
-    def start(self, session_id: str, task: str, *, resume: bool = False) -> None:
+    def _runway_check(self, db, session_id, trigger, seq):
+        previous = db.execute(
+            "SELECT data FROM events WHERE session_id=? AND kind='RUNWAY_CHECK' "
+            "ORDER BY seq DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        old_state = json.loads(previous[0])["forecast"]["state"] if previous else None
+        inputs = None
+        try:
+            attempts = [
+                dict(r)
+                for r in db.execute(
+                    "SELECT * FROM attempts WHERE session_id=? ORDER BY rowid",
+                    (session_id,),
+                )
+            ]
+            events = [
+                {"kind": r["kind"], "data": json.loads(r["data"])}
+                for r in db.execute(
+                    "SELECT kind,data FROM events WHERE session_id=? "
+                    "AND kind IN ('TASK_PLAN','LOCAL_TASK_COMPLETED') ORDER BY seq",
+                    (session_id,),
+                )
+            ]
+            inputs = runway.inputs_for(session_id, self._snapshot(db, session_id), attempts, events)
+            estimate = runway.forecast(inputs)
+            if not isinstance(estimate, dict) or estimate.get("state") not in {
+                "UNKNOWN",
+                "HEALTHY",
+                "TIGHT",
+                "SHORTFALL",
+            }:
+                raise ValueError("invalid advisory forecast")
+        except Exception:
+            # A broken planner must never reverse a settlement or pre-empt a cap decision.
+            # Database/audit write failures still follow the ledger's fail-closed behavior.
+            estimate = {
+                "state": "UNKNOWN",
+                "reason": "FORECAST_UNAVAILABLE",
+                "advisoryOnly": True,
+            }
+        data = {"trigger": trigger, "triggerSeq": seq, "inputs": inputs, "forecast": estimate}
+        now = datetime.now(UTC).isoformat()
+        db.execute(
+            "INSERT INTO events(session_id,time,kind,data) VALUES (?,?,?,?)",
+            (session_id, now, "RUNWAY_CHECK", json.dumps(data)),
+        )
+        if old_state != estimate["state"]:
+            db.execute(
+                "INSERT INTO events(session_id,time,kind,data) VALUES (?,?,?,?)",
+                (
+                    session_id,
+                    now,
+                    "RUNWAY_STATE_CHANGED",
+                    json.dumps(
+                        {
+                            **data,
+                            "from": old_state,
+                            "to": estimate["state"],
+                        }
+                    ),
+                ),
+            )
+
+    def start(
+        self,
+        session_id: str,
+        task: str,
+        *,
+        resume: bool = False,
+        plan: list | None = None,
+    ) -> None:
+        plan = runway.validate_plan(plan)
         with self._transaction() as db:
             if resume:
                 row = self._session(db, session_id)
                 if row["task"] != task:
                     raise LedgerError("a session must resume its original task")
+                if plan is not None and plan != self._plan(db, session_id):
+                    raise LedgerError("a resumed session cannot replace its caller task list")
             else:
                 if db.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone():
                     raise LedgerError("session already exists; use resume")
@@ -102,6 +187,49 @@ class Ledger:
                     "INSERT INTO sessions VALUES (?,?,?)", (session_id, task, self.policy_hash)
                 )
             self._event(db, session_id, "SESSION_RESUMED" if resume else "SESSION_CREATED", {})
+            if not resume and plan is not None:
+                self._event(db, session_id, "TASK_PLAN", {"items": plan})
+
+    @staticmethod
+    def _plan(db, session_id):
+        row = db.execute(
+            "SELECT data FROM events WHERE session_id=? AND kind='TASK_PLAN' ORDER BY seq LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        return json.loads(row[0])["items"] if row else None
+
+    def plan(self, session_id: str) -> list | None:
+        with self._transaction() as db:
+            self._session(db, session_id)
+            return self._plan(db, session_id)
+
+    def complete_local(self, session_id: str, text: str) -> list[str]:
+        """Only caller-approved local output can complete a matching planned item."""
+        with self._transaction() as db:
+            self._session(db, session_id)
+            completed = {
+                json.loads(r[0])["task_id"]
+                for r in db.execute(
+                    "SELECT data FROM events WHERE session_id=? AND kind='LOCAL_TASK_COMPLETED'",
+                    (session_id,),
+                )
+            }
+            matched = []
+            for item in self._plan(db, session_id) or []:
+                if item["text"] == text and item["allow_local"]:
+                    matched.append(item["id"])
+                    if item["id"] not in completed:
+                        self._event(
+                            db,
+                            session_id,
+                            "LOCAL_TASK_COMPLETED",
+                            {
+                                "task_id": item["id"],
+                                "type": item["type"],
+                                "payment_amount": "0",
+                            },
+                        )
+            return matched
 
     def task(self, session_id: str) -> str:
         with self._transaction() as db:
@@ -306,4 +434,13 @@ class Ledger:
                 "budget": snapshot,
                 "attempts": attempts,
                 "events": events,
+                "runway": next(
+                    (
+                        e["data"]["forecast"]
+                        for e in reversed(events)
+                        if e["kind"] == "RUNWAY_CHECK"
+                    ),
+                    {"state": "UNKNOWN", "reason": "NO_OBSERVATIONS", "advisoryOnly": True},
+                ),
+                "task_plan": self._plan(db, session_id),
             }

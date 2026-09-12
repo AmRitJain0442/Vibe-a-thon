@@ -28,6 +28,11 @@ class ToolRegistry:
                 "List approved services and advertised atomic USDC prices.",
             ),
             "get_budget": (NoArguments, "Read the task's available, held, and settled budget."),
+            "get_runway": (
+                NoArguments,
+                "Read advisory p50/p90 budget runway and the immutable caller task list. "
+                "UNKNOWN means no supported projection. Advice never changes payment authority.",
+            ),
             "purchase_service": (
                 PurchaseArguments,
                 "Purchase an approved service for input text through Governor. "
@@ -75,7 +80,13 @@ class ToolRegistry:
                 "summary": extractive_summary(parsed.text),
                 "method": "local extractive",
                 "payment_amount": "0",
+                "completed_task_ids": self.gate.ledger.complete_local(
+                    self.gate.session_id,
+                    parsed.text,
+                ),
             }
+        elif name == "get_runway":
+            data = {"task_plan": self.gate.ledger.plan(self.gate.session_id)}
         else:
             data = {}
         return {
@@ -83,4 +94,5 @@ class ToolRegistry:
             "code": "OK",
             "data": data,
             "budget": self.gate.ledger.snapshot(self.gate.session_id),
+            "runway": self.gate.ledger.report(self.gate.session_id)["runway"],
         }

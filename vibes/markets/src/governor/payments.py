@@ -1,8 +1,6 @@
 """Payment boundary. Only the simulated adapter is enabled in this scaffold."""
 
 import asyncio
-import hashlib
-import json
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -10,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from governor.config import atomic
 from governor.ledger import Ledger, LedgerError, Reservation
 from governor.networks import DEVNET_NETWORK
+from governor.runway import purchase_identity
 
 
 class Service(BaseModel):
@@ -64,12 +63,14 @@ class PaymentGate:
             "code": code,
             "data": data or {},
             "budget": self.ledger.snapshot(self.session_id),
+            "runway": self.ledger.report(self.session_id)["runway"],
         }
 
     def _previous(self, previous: Reservation, attempt_id: str) -> dict:
         if previous.status == "SETTLED":
             return self._result(ok=True, code="ALREADY_SETTLED", data=previous.result)
         if previous.status in ("DENIED", "RELEASED"):
+            self.ledger.record(self.session_id, "REFUSAL_RETURN", {"code": previous.result["code"]})
             return self._result(
                 ok=False, code=previous.result["code"], data={"attempt_id": attempt_id}
             )
@@ -91,8 +92,7 @@ class PaymentGate:
     async def purchase(self, service_id: str, text: str) -> dict:
         # Stable across model turns and process restarts. An identical purchase
         # within the same task is cached; a new task gets a new session identity.
-        identity = json.dumps([self.session_id, service_id, text], separators=(",", ":"))
-        attempt_id = hashlib.sha256(identity.encode()).hexdigest()
+        attempt_id = purchase_identity(self.session_id, service_id, text)
         previous = self.ledger.lookup(self.session_id, attempt_id)
         if previous:
             return self._previous(previous, attempt_id)

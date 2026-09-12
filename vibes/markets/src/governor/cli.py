@@ -17,11 +17,12 @@ from dotenv import load_dotenv
 
 from governor.agent import Agent
 from governor.config import ConfigurationError, Settings
-from governor.demo import TASK, DemoModel
+from governor.demo import RUNWAY_PLAN, RUNWAY_TASK, TASK, DemoModel, RunwayDemoModel
 from governor.gemini import GeminiModel
 from governor.ledger import Ledger, LedgerError
 from governor.mock import MockPaymentAdapter
 from governor.payments import PaymentGate
+from governor.runway import validate_plan
 from governor.tools import ToolRegistry
 
 
@@ -41,6 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run", help="run a task with Gemini and simulated payment tools")
     run.add_argument("task")
     run.add_argument("--session", type=session_name)
+    run.add_argument(
+        "--task-list", type=Path, help="caller-ordered JSON task list for budget runway"
+    )
     resume = commands.add_parser("resume", help="resume the original task with its existing budget")
     resume.add_argument("session", type=session_name)
     demo = commands.add_parser(
@@ -50,10 +54,14 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument(
         "--resume", action="store_true", help="reuse this demo session and its ledger"
     )
+    runway_demo = commands.add_parser(
+        "runway-demo", help="demonstrate early runway warning and approved local fallback"
+    )
+    runway_demo.add_argument("--session", type=session_name)
     report = commands.add_parser("report", help="read the audit or export settled expenses")
     report.add_argument("session", type=session_name)
     report.add_argument("--format", choices=["json", "csv"], default="json")
-    for command in (run, resume, demo, report):
+    for command in (run, resume, demo, runway_demo, report):
         command.add_argument("--data-dir", type=Path, help="override GOVERNOR_DATA_DIR")
     return parser
 
@@ -111,16 +119,20 @@ def expense_csv(report: dict) -> str:
 
 
 async def execute(args, settings: Settings) -> int:
-    is_demo = args.command == "demo"
-    should_resume = args.command == "resume" or (is_demo and args.resume)
+    is_runway_demo = args.command == "runway-demo"
+    is_demo = args.command in ("demo", "runway-demo")
+    should_resume = args.command == "resume" or (is_demo and getattr(args, "resume", False))
     if should_resume and not args.session:
         raise ValueError("resuming a demo requires --session")
     path = settings.data_dir / "ledger.sqlite3"
     if (should_resume or args.command == "report") and not path.is_file():
         raise LedgerError("ledger does not exist; refusing to create a replacement budget")
     model = None
+    plan = RUNWAY_PLAN if is_runway_demo else None
+    if getattr(args, "task_list", None):
+        plan = validate_plan(json.loads(args.task_list.read_text()))
     try:
-        if args.command not in ("report", "demo"):
+        if args.command != "report" and not is_demo:
             model = GeminiModel(settings)
         ledger = Ledger(path, settings.policy)
         if args.command == "report":
@@ -129,15 +141,17 @@ async def execute(args, settings: Settings) -> int:
             return 0
         session_id = args.session or uuid.uuid4().hex[:12]
         task = (
-            TASK if is_demo else (ledger.task(session_id) if should_resume else args.task.strip())
+            (RUNWAY_TASK if is_runway_demo else TASK)
+            if is_demo
+            else (ledger.task(session_id) if should_resume else args.task.strip())
         )
         if not task or len(task) > 20000:
             raise ValueError("task must contain 1–20000 characters")
-        ledger.start(session_id, task, resume=should_resume)
+        ledger.start(session_id, task, resume=should_resume, plan=plan)
         adapter = MockPaymentAdapter()
         tools = ToolRegistry(PaymentGate(ledger, session_id, adapter))
         if is_demo:
-            model = DemoModel()
+            model = RunwayDemoModel() if is_runway_demo else DemoModel()
             settings = settings.model_copy(update={"model": "offline-scripted-demo"})
         try:
             result = await Agent(model, tools, settings).run(task)
