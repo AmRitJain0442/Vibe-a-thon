@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import time
 import uuid
 import webbrowser
 from decimal import Decimal
@@ -12,6 +13,7 @@ from rich.markup import escape
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Collapsible, Footer, Input, Static
@@ -20,6 +22,7 @@ from governor.app_client import AppClient, AppError
 from governor.codex_launcher import mcp_configuration
 from governor.codex_transport import CodexTransport
 from governor.plugin_sessions import identifier
+from governor.terminal_settings import TerminalSettings
 from governor.terminal_text import AssistantReply
 
 
@@ -28,7 +31,10 @@ def dollars(value):
 
 
 class Prompt(Input):
-    BINDINGS = [("up", "previous", "Previous prompt"), ("down", "next", "Next prompt")]
+    BINDINGS = [
+        Binding("up", "previous", "Previous prompt", show=False),
+        Binding("down", "next", "Next prompt", show=False),
+    ]
 
     def __init__(self):
         super().__init__(placeholder="Ask Codex anything…", id="prompt", max_length=20000)
@@ -165,12 +171,16 @@ class GovernorTerminal(App):
         ("escape", "stop", "Stop"),
         ("ctrl+o", "dashboard", "Open app"),
         ("ctrl+l", "focus_prompt", "Prompt"),
+        ("f2", "settings", "Settings"),
     ]
     CSS = """
     Screen { background: #101010; color: #efeee9; }
-    #masthead { height: 4; padding: 1 2; border-bottom: solid #35312b; background: #191715; }
-    #brand { width: 1fr; color: #ff8a3d; text-style: bold; }
-    #connection { width: auto; color: #aaa59d; }
+    #masthead { height: 3; padding: 0 2; border-bottom: solid #35312b; background: #191715; }
+    #brand { padding-top: 1; width: 1fr; color: #ff8a3d; text-style: bold; }
+    #connection { padding-top: 1; width: auto; color: #aaa59d; }
+    #settings-button { width: 12; min-width: 12; height: 3; margin-left: 2;
+        background: #2c241b; color: #ff994f; border: none; }
+    #parameters { height: 2; padding: 0 2; color: #a8a39a; background: #191715; }
     #workspace { height: 1fr; }
     #conversation { width: 1fr; padding: 1 2; scrollbar-color: #815337; }
     #welcome { padding: 1 2; margin-bottom: 1; border-left: thick #ff8a3d; background: #1c1916; }
@@ -181,6 +191,8 @@ class GovernorTerminal(App):
     .message { height: auto; padding: 1 2; margin-bottom: 1; }
     .user { background: #26201a; border-left: thick #ff8a3d; }
     .assistant { border-left: solid #51483d; }
+    .dense .message { padding: 0 2; margin-bottom: 0; }
+    .dense .tool { margin-bottom: 0; }
     .notice { color: #aaa59d; padding: 0 2; margin-bottom: 1; height: auto; }
     .orange { color: #ff8a3d; text-style: bold; }
     .tool { margin-bottom: 1; padding: 0 1; border: solid #39332b; background: #171614; }
@@ -193,7 +205,8 @@ class GovernorTerminal(App):
     #send { min-width: 10; width: 10; margin-left: 1; background: #ff8a3d; color: #101010; }
     Footer { background: #191715; }
     FooterKey > .footer-key--key { background: #30271e; color: #ff8a3d; }
-    .compact #sidebar { display: none; }
+    .compact #sidebar, .no-sidebar #sidebar { display: none; }
+    .no-sidebar #compact-budget { display: block; }
     """
 
     def __init__(
@@ -205,6 +218,19 @@ class GovernorTerminal(App):
         self.transport_factory = transport_factory
         self.sid = identifier(args.session) if args.session else "codex-" + uuid.uuid4().hex[:16]
         self.mode = args.mode or "mock"
+        self.effort = ""
+        self.effective_model = args.model or "Configured model"
+        self.limits = {}
+        self.policy = {}
+        self.display_settings = {
+            "density": "comfortable",
+            "sidebar": True,
+            "expand_tools": False,
+            "refresh": 1.5,
+        }
+        self.turn_started_at = None
+        self.status_text = "○ Ready — type a prompt below"
+        self.settings_open = False
         self.created = False
         self.payload = None
         self.transport = None
@@ -226,20 +252,23 @@ class GovernorTerminal(App):
     def compose(self) -> ComposeResult:
         with Horizontal(id="masthead"):
             yield Static("▟ GOVERNOR   /   CODEX", id="brand")
-            yield Static("READY TO CONNECT", id="connection")
+            yield Static("READY", id="connection")
+            yield Button("Settings F2", id="settings-button")
+        yield Static("", id="parameters")
         with Horizontal(id="workspace"):
             with Conversation(id="conversation"):
                 yield Static(
                     Text(
-                        "YOUR AGENT. YOUR BUDGET.\n\n"
-                        "Type a prompt to start. Codex can explore your workspace, "
-                        "discover vendors,\n"
-                        "and use Governor's payment tools within your spending cap.\n\n"
-                        "Enter sends  ·  ↑ ↓ prompt history  ·  /help for commands"
+                        "BUILD WITH CODEX. STAY WITHIN BUDGET.\n\n"
+                        "Explore your project, find a vendor, or put an idea to work.\n"
+                        "Your tools, conversation, and spending stay together.\n\n"
+                        "01  Press F2 to tune your session\n"
+                        "02  Type a prompt to begin\n"
+                        "03  Follow every tool call and budget update"
                     ),
                     id="welcome",
                 )
-            with Vertical(id="sidebar"):
+            with VerticalScroll(id="sidebar"):
                 yield Static("BUDGET\n\nStarts with your first prompt", id="budget")
                 yield Static(
                     Text(
@@ -260,7 +289,10 @@ class GovernorTerminal(App):
 
     def on_mount(self):
         self.query_one(Prompt).focus()
-        self.set_interval(1.5, self.poll_budget)
+        self.budget_timer = self.set_interval(1.5, self.poll_budget)
+        self.set_interval(0.5, self.refresh_status)
+        self.refresh_parameters()
+        self.query_one(Prompt).border_title = " YOUR PROMPT "
         if self.initial_task:
             self.submit(self.initial_task)
         elif self.args.session:
@@ -270,7 +302,89 @@ class GovernorTerminal(App):
         self.screen.set_class(event.size.width < 100, "compact")
 
     def status(self, text):
-        self.query_one("#status", Static).update(Text(text))
+        self.status_text = text
+        self.refresh_status()
+
+    def refresh_status(self):
+        text = self.status_text
+        if self.busy and self.turn_started_at is not None:
+            text += f"  ·  {int(time.monotonic() - self.turn_started_at)}s"
+        color = "#ff994f" if self.busy else "#b4e3a7"
+        self.query_one("#status", Static).update(Text(text, style=color))
+        self.query_one("#send", Button).label = "Stop ■" if self.busy else "Send ↵"
+
+    def refresh_parameters(self):
+        line = Text("● ", style="#b4e3a7" if self.mode == "mock" else "#ff994f")
+        line.append("MOCK" if self.mode == "mock" else "DEVNET", style="bold #ffffff")
+        line.append("  /  " + (self.args.model or self.effective_model))
+        line.append("  /  " + (self.effort or "current effort"))
+        line.append("  /  " + self.display_settings["density"])
+        self.query_one("#parameters", Static).update(line)
+
+    @work
+    async def action_settings(self):
+        if self.settings_open:
+            return
+        if self.busy:
+            self.notify("Wait for this turn or press Esc before changing session settings.")
+            return
+        self.settings_open = True
+        try:
+            try:
+                state = await asyncio.to_thread(self.client.request, "/api/state")
+                self.policy = state.get("policy", {})
+            except (ValueError, OSError):
+                pass
+            if self.busy:
+                return
+            values = {
+                **self.display_settings,
+                "model": self.args.model or "",
+                "effort": self.effort,
+                "mode": self.mode,
+                "tool_approval": self.args.tool_approval,
+                "limits": self.limits,
+            }
+            if self.report:
+                values["limits"] = self.report.get("client", {}).get(
+                    "limits",
+                    {
+                        **self.report["budget"],
+                    },
+                )
+            result = await self.push_screen_wait(
+                TerminalSettings(
+                    values,
+                    self.policy,
+                    locked=bool(self.created or self.payload is not None or self.args.session),
+                )
+            )
+            if result is not None:
+                self.args.model = result["model"] or None
+                self.effort = result["effort"]
+                if not (self.created or self.payload is not None or self.args.session):
+                    self.mode = result["mode"]
+                    self.args.mode = self.mode
+                    self.args.tool_approval = result["tool_approval"]
+                    self.limits = result["limits"]
+                self.display_settings = {key: result[key] for key in self.display_settings}
+                self.screen.set_class(result["density"] == "dense", "dense")
+                self.screen.set_class(not result["sidebar"], "no-sidebar")
+                for box, _ in self.tools.values():
+                    box.collapsed = not result["expand_tools"]
+                self.budget_timer.stop()
+                self.budget_timer = self.set_interval(result["refresh"], self.poll_budget)
+                self.refresh_parameters()
+                self.query_one("#session", Static).update(
+                    Text(
+                        f"SESSION\n{self.sid}\n\nMODE\n{self.mode}\n\n"
+                        f"WORKSPACE\n{self.args.cwd.resolve()}"
+                    )
+                )
+                self.status("○ Settings applied · ready for your next prompt")
+                self.query_one(Prompt).focus()
+        finally:
+            self.settings_open = False
 
     async def add(self, text, kind="notice"):
         content = (
@@ -287,8 +401,13 @@ class GovernorTerminal(App):
             self.submit(event.value)
 
     def on_button_pressed(self, event):
-        if event.button.id == "send":
-            self.submit(self.query_one(Prompt).value)
+        if event.button.id == "settings-button":
+            self.action_settings()
+        elif event.button.id == "send":
+            if self.busy:
+                self.action_stop()
+            else:
+                self.submit(self.query_one(Prompt).value)
 
     def submit(self, text):
         text = text.strip()
@@ -300,9 +419,16 @@ class GovernorTerminal(App):
         if text == "/stop":
             self.action_stop()
             return
+        if text == "/settings":
+            self.query_one(Prompt).value = ""
+            self.action_settings()
+            return
         if text == "/app":
             self.action_dashboard()
             self.query_one(Prompt).value = ""
+            return
+        if self.settings_open:
+            self.notify("Close Settings before sending your prompt.")
             return
         if self.busy:
             self.notify("Codex is working. Esc stops the current turn; your draft stays here.")
@@ -327,6 +453,7 @@ class GovernorTerminal(App):
             await self.add(json.dumps((self.report or {}).get("budget", {}), indent=2))
         else:
             await self.add(
+                "/settings  Tune model, budget and display · F2\n"
                 "/budget  Show ledger totals     /app  Open dashboard\n"
                 "/stop  Interrupt Codex          /finish  Save answer and close budget\n"
                 "/quit  Leave session open       ↑ ↓  Recall prompts\n"
@@ -337,6 +464,7 @@ class GovernorTerminal(App):
         if self.created:
             return
         state = await asyncio.to_thread(self.client.request, "/api/state")
+        self.policy = state.get("policy", {})
         if state.get("plugin_api") != 1:
             raise AppError("Restart governor-web with the current Governor version.")
         if self.args.session:
@@ -361,10 +489,13 @@ class GovernorTerminal(App):
             # Keep both identity and payload across lost responses; never allocate a fresh cap.
             if self.payload is None:
                 self.payload = {"session_id": self.sid, "task": task, "mode": self.mode}
+                if self.limits:
+                    self.payload["limits"] = self.limits.copy()
                 if self.args.task_list:
                     self.payload["task_list"] = json.loads(self.args.task_list.read_text())
             await asyncio.to_thread(self.client.request, "/api/plugin/runs", self.payload)
         self.created = True
+        self.refresh_parameters()
         self.query_one("#session", Static).update(
             Text(
                 f"SESSION\n{self.sid}\n\nMODE\n{self.mode}\n\nWORKSPACE\n{self.args.cwd.resolve()}"
@@ -440,7 +571,9 @@ class GovernorTerminal(App):
                     file,
                 )
             temp.replace(self.state_file)
-            self.query_one("#connection", Static).update(Text("● " + result.get("model", "CODEX")))
+            self.effective_model = result.get("model", "CODEX")
+            self.query_one("#connection", Static).update(Text("● CONNECTED", style="#b4e3a7"))
+            self.refresh_parameters()
             if method == "thread/resume":
                 await self.add(
                     "Resumed the saved Codex conversation with the same Governor budget."
@@ -456,6 +589,7 @@ class GovernorTerminal(App):
         for welcome in self.query("#welcome"):
             await welcome.remove()
         await self.add("YOU\n" + text, "user")
+        self.turn_started_at = time.monotonic()
         self.status("◌ Connecting Codex…")
         try:
             await self.ensure_session(text)
@@ -467,6 +601,8 @@ class GovernorTerminal(App):
                 {
                     "threadId": self.thread_id,
                     "input": [{"type": "text", "text": text}],
+                    **({"model": self.args.model} if self.args.model else {}),
+                    **({"effort": self.effort} if self.effort else {}),
                 },
             )
             # turn/completed may arrive before the response; do not re-mark a finished turn busy.
@@ -522,7 +658,12 @@ class GovernorTerminal(App):
                 detail = json.dumps(item, indent=2, ensure_ascii=False)[:16000]
                 if key not in self.tools:
                     body = Static(Text(detail))
-                    box = Collapsible(body, title=title, collapsed=True, classes="tool")
+                    box = Collapsible(
+                        body,
+                        title=title,
+                        collapsed=not self.display_settings["expand_tools"],
+                        classes="tool",
+                    )
                     await self.query_one("#conversation").mount(box)
                     self.tools[key] = (box, body)
                 else:

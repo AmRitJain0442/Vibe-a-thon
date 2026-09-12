@@ -235,3 +235,57 @@ async def test_stream_follows_new_output_but_respects_scrollback(tmp_path):
         await app.add("Continue following", "assistant")
         await pilot.pause()
         assert pane.is_vertical_scroll_end
+
+
+async def test_settings_apply_to_next_turn_and_lock_budget_after_creation(tmp_path):
+    from textual.widgets import Input, Select
+
+    from governor.terminal_settings import TerminalSettings
+
+    app = terminal(tmp_path)
+    original_request = app.client.request
+    policy = {
+        "session_cap": "10000",
+        "per_call_cap": "3000",
+        "max_tool_calls": 16,
+        "run_timeout_seconds": 120,
+    }
+
+    def request(path, payload=None):
+        if path == "/api/state":
+            return {"plugin_api": 1, "policy": policy}
+        return original_request(path, payload)
+
+    app.client.request = request
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.press("f2")
+        await until(pilot, lambda: isinstance(app.screen, TerminalSettings))
+        app.screen.query_one("#setting-model", Input).value = "my-model"
+        app.screen.query_one("#setting-effort", Input).value = "high"
+        app.screen.query_one("#setting-session_cap", Input).value = "0.006"
+        app.screen.query_one("#setting-per_call_cap", Input).value = "0.002"
+        app.screen.query_one("#setting-density", Select).value = "dense"
+        await pilot.click("#settings-apply")
+        await until(pilot, lambda: not app.settings_open)
+        assert app.screen.has_class("dense")
+        app.submit("Use my settings")
+        await until(pilot, lambda: app.turn_id)
+        create = next(
+            payload for path, payload in app.client.requests if path == "/api/plugin/runs"
+        )
+        assert create["limits"]["session_cap"] == "6000"
+        turn = next(params for method, params in app.transport.calls if method == "turn/start")
+        assert turn["model"] == "my-model" and turn["effort"] == "high"
+        await app.transport.complete()
+        await pilot.press("f2")
+        await until(pilot, lambda: isinstance(app.screen, TerminalSettings))
+        assert app.screen.query_one("#setting-session_cap", Input).disabled
+        assert app.screen.query_one("#setting-mode", Select).disabled
+        app.screen.query_one("#setting-model", Input).value = "second-model"
+        await pilot.click("#settings-apply")
+        await until(pilot, lambda: not app.settings_open)
+        app.submit("Next prompt")
+        await until(pilot, lambda: app.turn_id)
+        turns = [params for method, params in app.transport.calls if method == "turn/start"]
+        assert turns[-1]["model"] == "second-model"
+        assert len([path for path, _ in app.client.requests if path == "/api/plugin/runs"]) == 1
