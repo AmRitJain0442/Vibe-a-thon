@@ -58,6 +58,33 @@ class Prompt(Input):
         self.value = ""
 
 
+class Conversation(VerticalScroll):
+    """Follow streamed output until the user deliberately scrolls back."""
+
+    following = True
+
+    def follow(self):
+        if self.following:
+            self.call_after_refresh(self.scroll_end, animate=False)
+
+    def on_mouse_scroll_up(self):
+        self.following = False
+
+    def on_mouse_scroll_down(self):
+        self.call_after_refresh(self.check_follow)
+
+    def check_follow(self):
+        self.following = self.is_vertical_scroll_end
+
+    def on_key(self, event):
+        if event.key in ("up", "pageup", "home"):
+            self.following = False
+        elif event.key == "end":
+            self.following = True
+        elif event.key in ("down", "pagedown"):
+            self.call_after_refresh(self.check_follow)
+
+
 class Decision(ModalScreen):
     """An explicit per-request response; never grants session-wide command approval."""
 
@@ -200,7 +227,7 @@ class GovernorTerminal(App):
             yield Static("▟ GOVERNOR   /   CODEX", id="brand")
             yield Static("READY TO CONNECT", id="connection")
         with Horizontal(id="workspace"):
-            with VerticalScroll(id="conversation"):
+            with Conversation(id="conversation"):
                 yield Static(
                     Text(
                         "YOUR AGENT. YOUR BUDGET.\n\n"
@@ -246,11 +273,9 @@ class GovernorTerminal(App):
 
     async def add(self, text, kind="notice"):
         widget = Static(Text(text), classes="message " + kind if kind != "notice" else "notice")
-        pane = self.query_one("#conversation", VerticalScroll)
-        follow = pane.is_vertical_scroll_end
+        pane = self.query_one(Conversation)
         await pane.mount(widget)
-        if follow:
-            pane.scroll_end(animate=False)
+        pane.follow()
         return widget
 
     def on_input_submitted(self, event: Input.Submitted):
@@ -420,6 +445,9 @@ class GovernorTerminal(App):
 
     @work
     async def run_prompt(self, text):
+        self.query_one(Conversation).following = True
+        for welcome in self.query("#welcome"):
+            await welcome.remove()
         await self.add("YOU\n" + text, "user")
         self.status("◌ Connecting Codex…")
         try:
@@ -456,9 +484,7 @@ class GovernorTerminal(App):
             entry = self.messages[key]
             entry[1] += params.get("delta", "")
             entry[0].update(Text("CODEX\n" + entry[1]))
-            pane = self.query_one("#conversation", VerticalScroll)
-            if pane.is_vertical_scroll_end:
-                pane.scroll_end(animate=False)
+            self.query_one(Conversation).follow()
         elif method in ("item/started", "item/completed"):
             item = params.get("item", {})
             kind, key = item.get("type"), item.get("id")
@@ -492,6 +518,7 @@ class GovernorTerminal(App):
                     box, body = self.tools[key]
                     box.title = title
                     body.update(Text(detail))
+                self.query_one(Conversation).follow()
                 self.status(f"{'Finished' if done else 'Running'} · {name}"[:200])
         elif method == "item/commandExecution/outputDelta":
             if row := self.tools.get(params.get("itemId")):

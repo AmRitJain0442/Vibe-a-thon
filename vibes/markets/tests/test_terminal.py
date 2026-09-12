@@ -2,7 +2,7 @@ from textual.widgets import Collapsible, Static
 
 from governor.app_client import AppError
 from governor.codex_launcher import parser
-from governor.terminal import Decision, GovernorTerminal, Prompt
+from governor.terminal import Conversation, Decision, GovernorTerminal, Prompt
 
 
 class Client:
@@ -215,3 +215,23 @@ async def test_conversation_resume_and_immutable_mode(tmp_path):
         third.submit("continue")
         await until(pilot, lambda: not third.busy)
         assert third.transport is None
+
+
+async def test_stream_follows_new_output_but_respects_scrollback(tmp_path):
+    app = terminal(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        pane = app.query_one(Conversation)
+        for i in range(12):
+            await app.add(f"Message {i}\n" + "Content\n" * 3, "assistant")
+        await pilot.pause()
+        assert pane.is_vertical_scroll_end
+        pane.on_mouse_scroll_up()
+        pane.scroll_home(animate=False)
+        await pilot.pause()
+        await app.add("New output while reading history", "assistant")
+        await pilot.pause()
+        assert pane.scroll_y == 0
+        pane.following = True
+        await app.add("Continue following", "assistant")
+        await pilot.pause()
+        assert pane.is_vertical_scroll_end
