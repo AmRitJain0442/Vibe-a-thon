@@ -6,11 +6,11 @@ import json
 import re
 
 from governor.audit import write_audit
+from governor.codex_tools import CodexTools
 from governor.ledger import LedgerError
 from governor.mock import MockPaymentAdapter
 from governor.payments import PaymentGate
 from governor.runway import validate_plan
-from governor.tools import ToolRegistry
 from governor.vendor.server import vendor_public
 
 
@@ -76,7 +76,7 @@ class PluginSessions:
             from governor.live_payments import DevnetPaymentAdapter
 
             adapter = DevnetPaymentAdapter(self.settings.data_dir, self.ledger, sid)
-        return ToolRegistry(PaymentGate(self.ledger, sid, adapter))
+        return CodexTools(PaymentGate(self.ledger, sid, adapter))
 
     def call(self, payload):
         if not isinstance(payload, dict) or set(payload) != {
