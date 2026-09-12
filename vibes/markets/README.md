@@ -1,20 +1,188 @@
 # Governor agent
 
-Gemini agent infrastructure for the [Governor PRD](../../PRD.md).
-Work lives on `vibes/markets` in `AmRitJain0442/Vibe-a-thon`.
+A Gemini agent that can discover approved services, request purchases through a
+deterministic budget gate, and fall back to a local excerpt. Based on the
+[Governor PRD](../../PRD.md). Work lives on `vibes/markets` in
+`AmRitJain0442/Vibe-a-thon`.
 
-Python 3.12 or newer. Configuration accepts Gemini Developer API credentials or
-Google Cloud Application Default Credentials. Monetary limits are integer atomic
-USDC units; Gemini cannot change them. Payment mode is currently simulation only.
+**Implemented:** Gemini tool calling, strict tool inputs, run limits, SQLite
+reservations, restart-safe purchase identities, an offline scenario, and audit exports.
+**Payment adapter:** simulated. No wallet keys, x402 HTTP handshake, cryptographic
+payment signatures, on-chain balance reads, or blockchain settlement are implemented yet.
+`run` uses real Gemini inference; `demo` uses a scripted model. Both use simulated payments.
+
+## Setup
+
+Python 3.12 or newer; tested with Python 3.14. From the repository root:
 
 ```bash
 cd vibes/markets
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev]'
+pip install -r requirements.lock
+pip install -e . --no-deps
 cp .env.example .env
-pytest
 ```
 
-The next pieces are the persistent budget ledger, explicit Gemini tool loop,
-and a runnable offline scenario.
+`requirements.lock` pins the tested runtime and development dependencies. For
+dependency development, use `pip install -e '.[dev]'`, then regenerate the lock with
+`pip freeze --exclude-editable > requirements.lock` after validation.
+
+## Offline demo
+
+```bash
+governor demo --session demo-1
+governor report demo-1
+governor report demo-1 --format csv
+governor demo --session demo-1 --resume
+```
+
+With default limits, the first run demonstrates:
+
+1. Listing services and inspecting the budget.
+2. Paying for a simulated summary.
+3. Refusing a per-call cap violation before authorization.
+4. Refusing a price increase above the advertised quote.
+5. Retaining a reservation after a simulated lost settlement response.
+6. Spending the remaining allowance and refusing the next purchase.
+7. Producing a local excerpt without another payment.
+
+The final budget is **8000 settled + 2000 held + 0 available = 10000 atomic USDC**.
+There are five simulated authorizations: four settled purchases and one unresolved
+attempt. On resume, settled outputs are reused and the pending attempt stays held;
+the simulated authorization count for the resumed run is zero.
+
+Use a new session name for a new task. Reusing a name without `--resume` is an error.
+The scenario follows the configured limits, so changing them changes its outcomes.
+
+## Run with Gemini
+
+For the Gemini Developer API, edit the local `.env`:
+
+```dotenv
+GEMINI_BACKEND=developer
+GEMINI_API_KEY=your-key-here
+GEMINI_MODEL=gemini-3.5-flash
+```
+
+Then run:
+
+```bash
+governor run "Use the summary service for this text: Agents buy services. Governor enforces a budget. Preserve funds on ambiguous failures." --session research-1
+governor resume research-1
+```
+
+The model ID is configurable. Availability depends on the selected API and project.
+Missing credentials cause an explicit error; the CLI never silently substitutes
+the scripted model for Gemini.
+
+For Google Cloud authentication:
+
+```bash
+gcloud auth application-default login
+```
+
+```dotenv
+GEMINI_BACKEND=vertex
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_LOCATION=global
+```
+
+The project needs billing and access to the Gemini model API. On a hosted workload,
+use its service identity via Application Default Credentials. The `vertex` backend
+selects the Google Cloud path using the current SDK's `enterprise=True` option;
+it does not send a Developer API key. See the
+[Google Gen AI SDK authentication documentation](https://googleapis.github.io/python-genai/).
+
+Model and hosting charges are **outside** Governor's simulated USDC allowance.
+
+## Configuration
+
+The CLI loads `.env` only from the working directory. Shell variables take precedence.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GOVERNOR_SESSION_CAP` | `10000` | Total purchase allowance in atomic USDC |
+| `GOVERNOR_PER_CALL_CAP` | `3000` | Maximum per purchase |
+| `GOVERNOR_MAX_TURNS` | `8` | Maximum model requests per invocation |
+| `GOVERNOR_MAX_TOOL_CALLS` | `16` | Maximum tool executions per invocation |
+| `GOVERNOR_RUN_TIMEOUT_SECONDS` | `120` | Deadline for the whole invocation |
+| `GOVERNOR_MODEL_TIMEOUT_SECONDS` | `30` | Deadline for one model request |
+| `GOVERNOR_DATA_DIR` | `.governor` | Local ledger and report directory |
+| `GOVERNOR_PAYMENT_MODE` | `mock` | Only supported payment mode |
+
+One USDC is 1,000,000 atomic units. Monetary inputs must be canonical decimal
+integer strings: `"2000"`, never `0.002`, scientific notation, or a float.
+`--data-dir /path/to/state` is available on every command. Use the same persistent
+directory and budget configuration when resuming.
+
+## Architecture and behavior
+
+```text
+CLI → Gemini model → bounded agent loop → validated tool registry
+                                             ├── list_services
+                                             ├── get_budget
+                                             ├── summarize_local
+                                             └── purchase_service
+                                                   ↓
+                                              PaymentGate
+                                                   ↓
+                                    SQLite reserve → mock authorize → settle
+```
+
+- The SDK receives tool declarations, not executable Python functions. Automatic
+  tool execution is disabled. Every model-requested purchase passes through the gate.
+- Full model content is preserved between turns, including thought signatures and
+  function-call IDs, following Google's
+  [function-calling context guidance](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures).
+- A model's text or tool output cannot change the operator's budget configuration.
+  Only four named tools are available; there is no shell, arbitrary URL fetch, or key tool.
+- The ledger performs check-and-reserve inside a SQLite `BEGIN IMMEDIATE` transaction.
+  Multiple local processes using the same ledger share one allowance.
+- The invariant is `session_cap = settled + held + available`. Caps come from config;
+  the persisted policy fingerprint detects configuration changes on resume.
+- A reservation is durably marked `AUTHORIZING` before the adapter is called.
+  Timeouts, cancellation, or ambiguous failures keep the hold. Only reservations
+  still known to be unsigned can be released locally.
+- Settlement amounts must exactly match the reservation. Mismatches are logged;
+  the amount is never silently clamped.
+- Identical `(session, service, text)` purchases reuse the original attempt. Settled
+  outputs are cached; pending attempts are not reauthorized. A deliberate repeat
+  purchase of identical input requires a new task session in this first version.
+- Resume restores the budget and previous payment outcomes, with a fresh model
+  conversation. It does not replay a persisted Gemini transcript.
+- `COMPLETED` means the model ended its turn with an answer; it is not independent
+  proof that the user's task was successfully completed.
+
+The ledger and audit contain task text and service outputs. They stay under the
+ignored `.governor/` directory by default. Reports are written atomically to
+`.governor/reports/<session>.json`; CSV exports contain settled expenses only.
+Receipts start with `mock:` and have no explorer links.
+
+## Checks
+
+```bash
+ruff check .
+ruff format --check .
+pytest -q
+```
+
+Tests cover cap boundaries, concurrent reservations, malformed prices, refusals
+before authorization, policy-change rejection, missing/corrupt state, duplicate
+purchases, cancellation, retained holds, tool validation, model/tool limits,
+Gemini request serialization, and CLI demo/resume/export behavior. The SDK test
+uses an HTTP mock; it does not require an API key or call Google.
+
+## Next integration steps
+
+1. Implement the real x402 payment adapter against a pinned SDK. Validate the
+   token contract, recipient, network, mechanism, and challenge before reserving
+   and signing. Current `Quote` is an internal mock contract, not a wire schema.
+2. Add receipt/nonce reconciliation before releasing any potentially signed hold.
+   This scaffold intentionally has no automatic timeout release or reset command.
+3. Isolate the signing key and budget writes in a separate service before allowing
+   an agent to execute arbitrary code. A local Python wrapper does not protect
+   against a process that can modify its own code, database, or credentials.
+4. Replace local SQLite with transactional shared storage for Cloud Run deployment.
+   The current ledger requires a persistent local disk; do not rely on an ephemeral
+   container filesystem for spending state.
