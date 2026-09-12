@@ -104,7 +104,7 @@ class ToolRegistry:
         elif name == "list_services":
             data = {
                 "services": [s.model_dump() for s in self.gate.services.values()],
-                "simulation": True,
+                "simulation": self.gate.mode == "mock",
             }
         elif name == "summarize_local":
             data = {

@@ -4,6 +4,53 @@ from google.genai import types
 
 TASK = "Exercise paid summaries, price changes, a timeout, cap refusals, and a local fallback."
 
+VENDOR_TEXT = (
+    "Agents can buy useful services. Governor checks the budget before signing. "
+    "The local demo vendor receives real Devnet USDC only after confirmed settlement."
+)
+VENDOR_TASK = "Buy one extractive summary from the local demo vendor for 0.002 Devnet USDC."
+
+
+class VendorDemoModel:
+    """One real purchase through the same tool/gate path, without requiring Gemini."""
+
+    async def generate(self, history, tools, instruction):
+        results = [
+            p.function_response.response
+            for m in history
+            for p in m.parts or []
+            if p.function_response
+        ]
+        if not results:
+            part = types.Part(
+                function_call=types.FunctionCall(
+                    name="purchase_service",
+                    args={"service_id": "vendor-summary", "text": VENDOR_TEXT},
+                )
+            )
+        else:
+            result = results[-1]
+            if result["ok"] and result["code"] in ("SETTLED", "ALREADY_SETTLED"):
+                answer = (
+                    "Paid 0.002 Devnet USDC to the demo vendor. "
+                    + result["data"]["output"]["summary"]
+                )
+            else:
+                answer = (
+                    "Vendor payment did not confirm: " + result["code"] + ". "
+                    "No second payment was attempted. Recheck the receipt or fix account setup."
+                )
+            part = types.Part.from_text(text=answer)
+        return types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    content=types.Content(role="model", parts=[part]),
+                    finish_reason=types.FinishReason.STOP,
+                )
+            ]
+        )
+
+
 RUNWAY_TASK = (
     "Summarize the ten caller-listed items in priority order. Local extractive fallback is "
     "approved. React to budget runway before the cap is exhausted, then demonstrate an "

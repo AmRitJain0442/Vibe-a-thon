@@ -18,7 +18,15 @@ from dotenv import load_dotenv
 from governor.agent import Agent
 from governor.cli import expense_csv, session_name, write_audit
 from governor.config import ConfigurationError, Settings
-from governor.demo import RUNWAY_PLAN, RUNWAY_TASK, TASK, DemoModel, RunwayDemoModel
+from governor.demo import (
+    RUNWAY_PLAN,
+    RUNWAY_TASK,
+    TASK,
+    VENDOR_TASK,
+    DemoModel,
+    RunwayDemoModel,
+    VendorDemoModel,
+)
 from governor.discovery import VendorScout
 from governor.gemini import GeminiModel
 from governor.ledger import Ledger, LedgerError
@@ -28,6 +36,7 @@ from governor.payments import PaymentGate
 from governor.runway import validate_plan
 from governor.solana_wallet import DevnetRPC, WalletError, load_wallet
 from governor.tools import ToolRegistry
+from governor.vendor.server import VENDOR_AMOUNT, VENDOR_ORIGIN, vendor_public
 
 STATIC = Path(__file__).with_name("static")
 
@@ -88,7 +97,18 @@ class Dashboard:
                 "network": "Solana Devnet",
                 "payment_ready": False,
             },
+            "vendor": self.vendor_info(),
         }
+
+    def vendor_info(self):
+        try:
+            return {
+                "configured": True,
+                **vendor_public(self.settings.data_dir),
+                "service_id": "vendor-summary",
+            }
+        except (OSError, ValueError, KeyError):
+            return {"configured": False, "origin": VENDOR_ORIGIN, "amount": VENDOR_AMOUNT}
 
     def report(self, session_id: str) -> dict:
         session_name(session_id)
@@ -128,23 +148,29 @@ class Dashboard:
         }:
             raise ValueError("Expected mode, task, and optional task_list only.")
         mode = payload.get("mode")
-        if mode not in ("demo", "gemini", "runway-demo"):
+        if mode not in ("demo", "gemini", "runway-demo", "gemini-devnet", "vendor-demo"):
             raise ValueError("Choose Gemini or the offline demo.")
         discover = payload.get("discover", False)
-        if type(discover) is not bool or (discover and mode != "gemini"):
+        if type(discover) is not bool or (discover and mode not in ("gemini", "gemini-devnet")):
             raise ValueError("Vendor discovery is available for Gemini runs only.")
         task = (
-            RUNWAY_TASK
-            if mode == "runway-demo"
-            else (TASK if mode == "demo" else payload.get("task"))
+            VENDOR_TASK
+            if mode == "vendor-demo"
+            else (
+                RUNWAY_TASK
+                if mode == "runway-demo"
+                else (TASK if mode == "demo" else payload.get("task"))
+            )
         )
-        if mode != "gemini" and payload.get("task_list") is not None:
+        if mode not in ("gemini", "gemini-devnet") and payload.get("task_list") is not None:
             raise ValueError("Scripted demos use their own fixed task lists.")
         plan = validate_plan(RUNWAY_PLAN if mode == "runway-demo" else payload.get("task_list"))
         if not isinstance(task, str) or not 1 <= len(task.strip()) <= 20000:
             raise ValueError("Enter a task between 1 and 20,000 characters.")
-        if mode == "gemini":
+        if mode in ("gemini", "gemini-devnet"):
             self.settings.require_credentials()
+        if mode in ("gemini-devnet", "vendor-demo"):
+            vendor_public(self.settings.data_dir)
         return self._start_worker(task.strip(), mode, plan, discover)
 
     def discover(self, payload: dict) -> str:
@@ -161,7 +187,8 @@ class Dashboard:
             if self.active:
                 raise BusyError("An agent is already running. Wait for it to finish.")
             session_id = f"{mode}-{uuid.uuid4().hex[:10]}"
-            self.ledger.start(session_id, task.strip(), plan=plan)
+            payment_mode = "solana-devnet" if mode in ("gemini-devnet", "vendor-demo") else "mock"
+            self.ledger.start(session_id, task.strip(), plan=plan, payment_mode=payment_mode)
             self.active = session_id
             worker = threading.Thread(
                 target=self._run, args=(session_id, task.strip(), mode, discover), daemon=True
@@ -174,15 +201,25 @@ class Dashboard:
             model = None
             try:
                 settings = self.settings
-                if mode in ("demo", "runway-demo"):
-                    model = PacedRunwayDemo() if mode == "runway-demo" else PacedDemo()
+                if mode in ("demo", "runway-demo", "vendor-demo"):
+                    model = (
+                        VendorDemoModel()
+                        if mode == "vendor-demo"
+                        else PacedRunwayDemo()
+                        if mode == "runway-demo"
+                        else PacedDemo()
+                    )
                     settings = settings.model_copy(update={"model": "offline-scripted-demo"})
                 else:
                     model = GeminiModel(settings)
                 adapter = MockPaymentAdapter()
+                if mode in ("gemini-devnet", "vendor-demo"):
+                    from governor.live_payments import DevnetPaymentAdapter
+
+                    adapter = DevnetPaymentAdapter(settings.data_dir, self.ledger, session_id)
                 scout = (
                     VendorScout(model, self.ledger, session_id, settings)
-                    if mode in ("gemini", "discovery")
+                    if mode in ("gemini", "gemini-devnet", "discovery")
                     else None
                 )
                 if mode == "discovery":
@@ -223,8 +260,13 @@ class Dashboard:
                 return {
                     **result.to_dict(),
                     "model_mode": mode,
-                    "payment_mode": "mock",
-                    "simulated_authorizations_this_run": adapter.authorization_count,
+                    "payment_mode": registry.gate.mode,
+                    "simulated_authorizations_this_run": adapter.authorization_count
+                    if registry.gate.mode == "mock"
+                    else 0,
+                    "devnet_authorizations_this_run": adapter.authorization_count
+                    if registry.gate.mode == "solana-devnet"
+                    else 0,
                 }
             finally:
                 if isinstance(model, GeminiModel):
@@ -239,7 +281,7 @@ class Dashboard:
                 "status": "RUN_ERROR",
                 "answer": "Run stopped. Check the local credentials and ledger configuration.",
                 "model_mode": mode,
-                "payment_mode": "mock",
+                "payment_mode": self.ledger.snapshot(session_id)["payment_mode"],
             }
             try:
                 self.ledger.record(session_id, "RUN_FINISHED", {"status": "RUN_ERROR"})
@@ -270,6 +312,26 @@ class Dashboard:
             }
         except (WalletError, ValueError, KeyError, TypeError, httpx.HTTPError):
             return {"status": "unavailable", "address": address, "network": "Solana Devnet"}
+
+    def reconcile(self, payload: dict) -> dict:
+        from governor.live_payments import DevnetPaymentAdapter
+
+        if not isinstance(payload, dict) or set(payload) != {"session_id", "attempt_id"}:
+            raise ValueError("Expected session_id and attempt_id")
+        if not isinstance(payload["session_id"], str):
+            raise ValueError("Invalid session")
+        session_id = session_name(payload["session_id"])
+        attempt_id = payload["attempt_id"]
+        if not isinstance(attempt_id, str) or len(attempt_id) != 64:
+            raise ValueError("Invalid attempt")
+        gate = PaymentGate(
+            self.ledger,
+            session_id,
+            DevnetPaymentAdapter(self.settings.data_dir, self.ledger, session_id),
+        )
+        result = asyncio.run(gate.reconcile(attempt_id))
+        # The ledger is authoritative; preserve the original model answer as historical text.
+        return result
 
 
 def make_server(app: Dashboard, port: int = 8787) -> ThreadingHTTPServer:
@@ -357,7 +419,7 @@ def make_server(app: Dashboard, port: int = 8787) -> ThreadingHTTPServer:
         def do_POST(self):
             if not self.allowed(mutation=True):
                 return
-            if self.path not in ("/api/runs", "/api/discovery"):
+            if self.path not in ("/api/runs", "/api/discovery", "/api/reconcile"):
                 return self.respond(404, {"error": "Endpoint not found."})
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -365,6 +427,8 @@ def make_server(app: Dashboard, port: int = 8787) -> ThreadingHTTPServer:
                     return self.respond(413, {"error": "Request is too large or empty."})
                 self.connection.settimeout(10)
                 payload = json.loads(self.rfile.read(length))
+                if self.path == "/api/reconcile":
+                    return self.respond(200, app.reconcile(payload))
                 start = app.discover if self.path == "/api/discovery" else app.start
                 return self.respond(202, {"session_id": start(payload)})
             except BusyError as exc:
@@ -391,7 +455,9 @@ def main() -> int:
     app = Dashboard(settings)
     server = make_server(app, args.port)
     print(f"Governor dashboard: http://127.0.0.1:{server.server_port}", flush=True)
-    print("Local access only. Gemini inference is live; payments are simulated.", flush=True)
+    print(
+        "Local access only. Sandbox payments are simulated; Devnet modes transfer USDC.", flush=True
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

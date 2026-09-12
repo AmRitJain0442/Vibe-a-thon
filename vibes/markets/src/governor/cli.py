@@ -5,17 +5,16 @@ import asyncio
 import csv
 import io
 import json
-import os
 import re
 import sqlite3
 import sys
-import tempfile
 import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from governor.agent import Agent
+from governor.audit import write_audit
 from governor.config import ConfigurationError, Settings
 from governor.demo import RUNWAY_PLAN, RUNWAY_TASK, TASK, DemoModel, RunwayDemoModel
 from governor.discovery import VendorScout
@@ -72,29 +71,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def write_audit(data_dir: Path, session_id: str, report: dict) -> Path:
-    directory = data_dir / "reports"
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    target = directory / f"{session_id}.json"
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=directory, delete=False
-    ) as file:
-        temporary = Path(file.name)
-        try:
-            json.dump(report, file, indent=2)
-            file.write("\n")
-            file.flush()
-            os.fsync(file.fileno())
-        except BaseException:
-            temporary.unlink(missing_ok=True)
-            raise
-    try:
-        temporary.replace(target)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return target
-
-
 def expense_csv(report: dict) -> str:
     output = io.StringIO()
     writer = csv.DictWriter(
@@ -118,7 +94,7 @@ def expense_csv(report: dict) -> str:
                     "service": attempt["service"],
                     "amount_atomic_usdc": attempt["amount"],
                     "receipt": attempt["result"]["receipt"],
-                    "payment_mode": "mock",
+                    "payment_mode": report["budget"]["payment_mode"],
                 }
             )
     return output.getvalue()
@@ -153,8 +129,13 @@ async def execute(args, settings: Settings) -> int:
         )
         if not task or len(task) > 20000:
             raise ValueError("task must contain 1–20000 characters")
-        ledger.start(session_id, task, resume=should_resume, plan=plan)
+        payment_mode = "mock" if is_demo else settings.payment_mode
+        ledger.start(session_id, task, resume=should_resume, plan=plan, payment_mode=payment_mode)
         adapter = MockPaymentAdapter()
+        if payment_mode == "solana-devnet":
+            from governor.live_payments import DevnetPaymentAdapter
+
+            adapter = DevnetPaymentAdapter(settings.data_dir, ledger, session_id)
         scout = None if is_demo else VendorScout(model, ledger, session_id, settings)
         tools = ToolRegistry(
             PaymentGate(ledger, session_id, adapter),
@@ -175,8 +156,13 @@ async def execute(args, settings: Settings) -> int:
                     **result.to_dict(),
                     "audit_path": str(audit_path),
                     "model_mode": "scripted" if is_demo else "gemini",
-                    "payment_mode": "mock",
-                    "simulated_authorizations_this_run": adapter.authorization_count,
+                    "payment_mode": payment_mode,
+                    "simulated_authorizations_this_run": adapter.authorization_count
+                    if payment_mode == "mock"
+                    else 0,
+                    "devnet_authorizations_this_run": adapter.authorization_count
+                    if payment_mode == "solana-devnet"
+                    else 0,
                 },
                 indent=2,
             )
