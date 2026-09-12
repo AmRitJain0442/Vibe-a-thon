@@ -6,7 +6,8 @@ deterministic budget gate, and fall back to a local excerpt. Based on the
 `AmRitJain0442/Vibe-a-thon`.
 
 **Implemented:** Gemini tool calling, strict tool inputs, run limits, SQLite
-reservations, restart-safe purchase identities, an offline scenario, and audit exports.
+reservations, restart-safe purchase identities, offline scenarios, audit exports,
+Budget Runway, and live Bazaar discovery with a parallel Gemini vendor scout.
 **Payment adapter:** simulated. The separate operator wallet CLI can create a
 Solana Devnet wallet, request SOL, and read actual SOL/USDC balances. Agent purchases
 do not yet use that wallet, an x402 HTTP handshake, or blockchain settlement.
@@ -22,6 +23,15 @@ The pixel-style control room includes light/dark orange themes, Gemini task laun
 an offline demo, session budgets and activity, JSON/CSV downloads, and live devnet
 wallet balances. No frontend build step is required.
 See [dashboard usage and access boundary](docs/dashboard.md).
+
+## Bazaar vendor scout
+
+Open **Services** to search live Bazaar listings, or enable the scout in the Gemini
+launcher to search alongside the main agent. The frontend shows parallel queries,
+candidate prices, task-fit assessments, budget compatibility and a recommendation.
+CLI: `governor run "Find a Devnet circuit breaker API" --discover-vendors`.
+Discovered sellers are advisory listings; their purchases are not connected yet.
+See [discovery behavior, ranking and limits](docs/bazaar.md).
 
 ## Budget Runway
 
@@ -127,7 +137,7 @@ The CLI loads `.env` only from the working directory. Shell variables take prece
 |---|---|---|
 | `GOVERNOR_SESSION_CAP` | `10000` | Total purchase allowance in atomic USDC |
 | `GOVERNOR_PER_CALL_CAP` | `3000` | Maximum per purchase |
-| `GOVERNOR_MAX_TURNS` | `8` | Maximum model requests per invocation |
+| `GOVERNOR_MAX_TURNS` | `8` | Maximum parent model requests; scout adds at most two |
 | `GOVERNOR_MAX_TOOL_CALLS` | `16` | Maximum tool executions per invocation |
 | `GOVERNOR_RUN_TIMEOUT_SECONDS` | `120` | Deadline for the whole invocation |
 | `GOVERNOR_MODEL_TIMEOUT_SECONDS` | `30` | Deadline for one model request |
@@ -145,6 +155,9 @@ directory and budget configuration when resuming.
 CLI → Gemini model → bounded agent loop → validated tool registry
                                              ├── list_services
                                              ├── get_budget
+                                             ├── get_runway
+                                             ├── discover_vendors → bounded scout → parallel Bazaar searches
+                                             ├── get_vendor_search → advisory shortlist
                                              ├── summarize_local
                                              └── purchase_service
                                                    ↓
@@ -159,7 +172,8 @@ CLI → Gemini model → bounded agent loop → validated tool registry
   function-call IDs, following Google's
   [function-calling context guidance](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures).
 - A model's text or tool output cannot change the operator's budget configuration.
-  Only four named tools are available; there is no shell, arbitrary URL fetch, or key tool.
+  Only named tools are available; there is no shell, arbitrary URL fetch, or key tool.
+  Live runs also expose the read-only scout; discovered IDs do not join the payment allowlist.
 - The ledger performs check-and-reserve inside a SQLite `BEGIN IMMEDIATE` transaction.
   Multiple local processes using the same ledger share one allowance.
 - The invariant is `session_cap = settled + held + available`. Caps come from config;

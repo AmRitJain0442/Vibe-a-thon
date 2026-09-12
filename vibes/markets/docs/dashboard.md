@@ -30,7 +30,12 @@ The server loads only the `.env` in its working directory.
 - **Sessions:** search local tasks, inspect their ledger and final response,
   download audit JSON and settled-expense CSV. Older CLI sessions have their
   existing audit events; final answer text is available for dashboard-created runs.
-- **Services:** four existing simulated services and task-launcher shortcuts.
+- **Services:** live Bazaar search, vendor comparisons and recommendations, plus the
+  four simulated services and task-launcher shortcuts. Discovered sellers remain
+  advisory listings with purchases disconnected. See [Bazaar discovery](bazaar.md).
+- **Vendor scout:** optional parallel Gemini child context with live search branches,
+  task-fit/price/usage ranking, explicit no-match and error states, token usage and a
+  discovery activity filter. Enabled by default in the Gemini launcher.
 - **Wallet:** read verified Solana Devnet balances, copy the public address, and
   open the explorer. A missing wallet or failed RPC does not become a zero balance.
 - **Policy:** inspect the configured caps, turn/tool limits and run deadline.
@@ -74,7 +79,11 @@ theme persistence, task launch, refusal filters, report download, session search
 and live wallet reads. All five views were checked at 360, 390, 768, 1024 and 1440px
 without horizontal page overflow or browser console errors. A live Gemini task
 returned the 10000 atomic USDC budget through the UI, and the wallet view verified
-20 devnet USDC. The full suite now passes 90 tests, including Budget Runway coverage.
+20 devnet USDC. Additional discovery tests exercise the scout's concurrency, ranking,
+failure boundaries and parent handoff. Live Gemini/Bazaar runs showed planning,
+searching, ranking and recommendation in Chrome at desktop and mobile sizes with
+no page overflow or JavaScript errors; the USDC budget stayed untouched.
+The complete suite passes 147 tests; Ruff lint and formatting checks pass.
 
 See [artwork.md](artwork.md) for the exact built-in imagegen prompts and font
 license locations. The transparent PNGs are packaged at

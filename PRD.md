@@ -89,6 +89,10 @@ Makes client-side enforcement *necessary* rather than merely present.
 - **Expense report.** CSV of every settled payment with explorer links, emitted on exit.
 - **Budget Runway.** Continuously project whether available budget covers the caller's remaining
   work, with early warnings and options before a hard-cap refusal. See §6.1 and FR-16–FR-20.
+- **Bazaar vendor scout.** A bounded Gemini child context searches for relevant vendors in
+  parallel with the task agent and explains its advisory shortlist live in the dashboard.
+  Listings remain separate from purchase authorization. See FR-21–FR-25 and
+  [implementation details](vibes/markets/docs/bazaar.md).
 
 ### V2 — routing and choice
 
@@ -300,6 +304,22 @@ Numbered so they can be tested individually.
 - **FR-20** `tasksRemaining` comes from the caller's task list. When unknown, report
   `runwayTasks` only once samples are sufficient, suppress completion projections and shortfall,
   and keep state `UNKNOWN`. Never infer the total workload from the model's prose.
+
+**Bazaar discovery (V1)**
+
+- **FR-21** Discover live Bazaar resources with network, token and payment-scheme filters;
+  validate returned metadata and canonical atomic prices independently.
+- **FR-22** One bounded scout per invocation plans up to three concurrent searches and
+  assesses at most twelve distinct endpoints in a separate Gemini context. Parent exit
+  cancels and joins its work; it cannot recursively spawn agents.
+- **FR-23** Rank advertised task fit, price and reported usage with visible reasons.
+  Recommend only supported listings within both current budget limits and with sufficient
+  task-fit evidence. Return no match when none qualify; disclose limited or failed searches.
+- **FR-24** Persist and display search stages, individual queries, candidates, reasons,
+  recommendation, errors and scout token usage while the run proceeds.
+- **FR-25** Discovery is advisory and cannot sign, reserve funds, raise a cap, register an
+  approved payment service or execute seller-provided instructions. In the current build,
+  discovered sellers have purchases disconnected; real settlement requires a separate adapter.
 
 ---
 
