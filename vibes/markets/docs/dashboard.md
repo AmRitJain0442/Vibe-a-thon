@@ -30,6 +30,10 @@ The server loads only the `.env` in its working directory.
 - **Sessions:** search local tasks, inspect their ledger and final response,
   download audit JSON and settled-expense CSV. Older CLI sessions have their
   existing audit events; final answer text is available for dashboard-created runs.
+- **Codex plugin sessions:** Codex calls Governor tools directly over the local
+  CLI bridge. Session details show Codex ownership, waiting/running state,
+  expandable tool results, budget and its submitted final answer. No Gemini model
+  runs in this path. See [Codex plugin](codex-plugin.md).
 - **Services:** live Bazaar search, vendor comparisons and recommendations, plus the
   four simulated services and task-launcher shortcuts. Discovered sellers remain
   advisory listings with purchases disconnected. See [Bazaar discovery](bazaar.md).

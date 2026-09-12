@@ -14,6 +14,13 @@ The vendor adapter signs with the existing buyer wallet, verifies chain receipts
 and records actual USDC spend. Arbitrary Bazaar sellers are not yet purchasable.
 `run` uses real Gemini inference; the original `demo` stays fully offline.
 
+## Codex CLI plugin
+
+Codex can directly use Governor's budget and paid-service tools while remaining
+the reasoning agent. The app shows its session, calls, spending and final answer.
+See [plugin setup and usage](docs/codex-plugin.md); source lives in
+[`plugins/governor`](plugins/governor).
+
 For the active Solana Devnet configuration, see [wallet and faucet setup](docs/solana-devnet.md).
 
 ## Local dashboard
