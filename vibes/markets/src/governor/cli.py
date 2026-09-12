@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from governor.agent import Agent
 from governor.config import ConfigurationError, Settings
 from governor.demo import RUNWAY_PLAN, RUNWAY_TASK, TASK, DemoModel, RunwayDemoModel
+from governor.discovery import VendorScout
 from governor.gemini import GeminiModel
 from governor.ledger import Ledger, LedgerError
 from governor.mock import MockPaymentAdapter
@@ -42,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run", help="run a task with Gemini and simulated payment tools")
     run.add_argument("task")
     run.add_argument("--session", type=session_name)
+    run.add_argument(
+        "--discover-vendors",
+        action="store_true",
+        help="run a read-only Bazaar scout alongside the main agent",
+    )
     run.add_argument(
         "--task-list", type=Path, help="caller-ordered JSON task list for budget runway"
     )
@@ -149,7 +155,12 @@ async def execute(args, settings: Settings) -> int:
             raise ValueError("task must contain 1–20000 characters")
         ledger.start(session_id, task, resume=should_resume, plan=plan)
         adapter = MockPaymentAdapter()
-        tools = ToolRegistry(PaymentGate(ledger, session_id, adapter))
+        scout = None if is_demo else VendorScout(model, ledger, session_id, settings)
+        tools = ToolRegistry(
+            PaymentGate(ledger, session_id, adapter),
+            scout=scout,
+            auto_discover=getattr(args, "discover_vendors", False),
+        )
         if is_demo:
             model = RunwayDemoModel() if is_runway_demo else DemoModel()
             settings = settings.model_copy(update={"model": "offline-scripted-demo"})

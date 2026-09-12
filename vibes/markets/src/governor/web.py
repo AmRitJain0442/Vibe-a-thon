@@ -19,6 +19,7 @@ from governor.agent import Agent
 from governor.cli import expense_csv, session_name, write_audit
 from governor.config import ConfigurationError, Settings
 from governor.demo import RUNWAY_PLAN, RUNWAY_TASK, TASK, DemoModel, RunwayDemoModel
+from governor.discovery import VendorScout
 from governor.gemini import GeminiModel
 from governor.ledger import Ledger, LedgerError
 from governor.mock import MockPaymentAdapter
@@ -82,6 +83,11 @@ class Dashboard:
             "active_session": active,
             "sessions": self.ledger.sessions(),
             "services": [s.model_dump() for s in MockPaymentAdapter().catalog()],
+            "discovery": {
+                "source": "Coinbase Bazaar",
+                "network": "Solana Devnet",
+                "payment_ready": False,
+            },
         }
 
     def report(self, session_id: str) -> dict:
@@ -105,14 +111,28 @@ class Dashboard:
         report["status"] = (
             "RUNNING" if active else finished["data"]["status"] if finished else "INTERRUPTED"
         )
+        if not active and report["discovery"]["status"] in ("PLANNING", "SEARCHING", "RANKING"):
+            report["discovery"] = {
+                **report["discovery"],
+                "status": "CANCELLED",
+                "summary": "The scout run was interrupted.",
+            }
         return report
 
     def start(self, payload: dict) -> str:
-        if not isinstance(payload, dict) or set(payload) - {"mode", "task", "task_list"}:
+        if not isinstance(payload, dict) or set(payload) - {
+            "mode",
+            "task",
+            "task_list",
+            "discover",
+        }:
             raise ValueError("Expected mode, task, and optional task_list only.")
         mode = payload.get("mode")
         if mode not in ("demo", "gemini", "runway-demo"):
             raise ValueError("Choose Gemini or the offline demo.")
+        discover = payload.get("discover", False)
+        if type(discover) is not bool or (discover and mode != "gemini"):
+            raise ValueError("Vendor discovery is available for Gemini runs only.")
         task = (
             RUNWAY_TASK
             if mode == "runway-demo"
@@ -125,6 +145,18 @@ class Dashboard:
             raise ValueError("Enter a task between 1 and 20,000 characters.")
         if mode == "gemini":
             self.settings.require_credentials()
+        return self._start_worker(task.strip(), mode, plan, discover)
+
+    def discover(self, payload: dict) -> str:
+        if not isinstance(payload, dict) or set(payload) != {"query"}:
+            raise ValueError("Provide a service search query only.")
+        query = payload["query"]
+        if not isinstance(query, str) or not 1 <= len(query.strip()) <= 400:
+            raise ValueError("Search query must contain 1–400 characters.")
+        self.settings.require_credentials()
+        return self._start_worker(query.strip(), "discovery", None, True)
+
+    def _start_worker(self, task: str, mode: str, plan, discover: bool) -> str:
         with self.lock:
             if self.active:
                 raise BusyError("An agent is already running. Wait for it to finish.")
@@ -132,12 +164,12 @@ class Dashboard:
             self.ledger.start(session_id, task.strip(), plan=plan)
             self.active = session_id
             worker = threading.Thread(
-                target=self._run, args=(session_id, task.strip(), mode), daemon=True
+                target=self._run, args=(session_id, task.strip(), mode, discover), daemon=True
             )
             worker.start()
         return session_id
 
-    def _run(self, session_id: str, task: str, mode: str) -> None:
+    def _run(self, session_id: str, task: str, mode: str, discover: bool = False) -> None:
         async def run():
             model = None
             try:
@@ -148,7 +180,45 @@ class Dashboard:
                 else:
                     model = GeminiModel(settings)
                 adapter = MockPaymentAdapter()
-                registry = ToolRegistry(PaymentGate(self.ledger, session_id, adapter))
+                scout = (
+                    VendorScout(model, self.ledger, session_id, settings)
+                    if mode in ("gemini", "discovery")
+                    else None
+                )
+                if mode == "discovery":
+                    self.ledger.record(
+                        session_id,
+                        "RUN_STARTED",
+                        {"model": settings.model, "agent": "vendor-scout"},
+                    )
+                    scout.start(task)
+                    try:
+                        discovery = await scout.result()
+                    finally:
+                        await scout.cancel()
+                    status = (
+                        "COMPLETED"
+                        if discovery["status"] in ("COMPLETED", "NO_MATCH")
+                        else "DISCOVERY_FAILED"
+                    )
+                    self.ledger.record(
+                        session_id, "RUN_FINISHED", {"status": status, "usage": discovery["usage"]}
+                    )
+                    return {
+                        "session_id": session_id,
+                        "status": status,
+                        "answer": discovery["summary"],
+                        "discovery": discovery,
+                        "usage": discovery["usage"],
+                        "model_mode": mode,
+                        "payment_mode": "mock",
+                        "simulated_authorizations_this_run": 0,
+                    }
+                registry = ToolRegistry(
+                    PaymentGate(self.ledger, session_id, adapter),
+                    scout=scout,
+                    auto_discover=discover,
+                )
                 result = await Agent(model, registry, settings).run(task)
                 return {
                     **result.to_dict(),
@@ -287,7 +357,7 @@ def make_server(app: Dashboard, port: int = 8787) -> ThreadingHTTPServer:
         def do_POST(self):
             if not self.allowed(mutation=True):
                 return
-            if self.path != "/api/runs":
+            if self.path not in ("/api/runs", "/api/discovery"):
                 return self.respond(404, {"error": "Endpoint not found."})
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -295,13 +365,14 @@ def make_server(app: Dashboard, port: int = 8787) -> ThreadingHTTPServer:
                     return self.respond(413, {"error": "Request is too large or empty."})
                 self.connection.settimeout(10)
                 payload = json.loads(self.rfile.read(length))
-                return self.respond(202, {"session_id": app.start(payload)})
+                start = app.discover if self.path == "/api/discovery" else app.start
+                return self.respond(202, {"session_id": start(payload)})
             except BusyError as exc:
                 self.respond(409, {"error": str(exc)})
             except ConfigurationError as exc:
                 self.respond(400, {"error": str(exc)})
             except (ValueError, UnicodeDecodeError):
-                self.respond(400, {"error": "Choose a mode and provide a valid task."})
+                self.respond(400, {"error": "Provide a valid task or service search query."})
             except (LedgerError, sqlite3.Error, OSError):
                 self.respond(503, {"error": "Cannot start a run. Local state is unavailable."})
 

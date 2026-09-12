@@ -3,6 +3,7 @@
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from governor.discovery import VendorScout
 from governor.mock import extractive_summary
 from governor.payments import PaymentGate
 
@@ -19,9 +20,17 @@ class PurchaseArguments(TextArguments):
     service_id: str = Field(min_length=1, max_length=64)
 
 
+class DiscoveryArguments(NoArguments):
+    query: str = Field(min_length=1, max_length=400)
+
+
 class ToolRegistry:
-    def __init__(self, gate: PaymentGate):
+    def __init__(
+        self, gate: PaymentGate, *, scout: VendorScout | None = None, auto_discover: bool = False
+    ):
         self.gate = gate
+        self.scout = scout
+        self.auto_discover = auto_discover
         self.schemas = {
             "list_services": (
                 NoArguments,
@@ -45,6 +54,23 @@ class ToolRegistry:
                 "This is an extractive fallback, not an LLM summary.",
             ),
         }
+        if scout:
+            self.schemas.update(
+                {
+                    "discover_vendors": (
+                        DiscoveryArguments,
+                        "Start the read-only Bazaar scout for this capability. One search pass "
+                        "per run; existing work is reused. Searches run alongside your work. "
+                        "Discovered IDs cannot be purchased in this build. Use get_vendor_search "
+                        "to await the shortlist and inspect task-fit, budget and compatibility.",
+                    ),
+                    "get_vendor_search": (
+                        NoArguments,
+                        "Wait for the current vendor scout and read its advisory shortlist. "
+                        "No match is a valid result. This never authorizes a payment.",
+                    ),
+                }
+            )
 
     def declarations(self) -> list[types.FunctionDeclaration]:
         return [
@@ -68,9 +94,14 @@ class ToolRegistry:
                 "code": "INVALID_ARGUMENTS",
                 "fields": [".".join(map(str, error["loc"])) for error in exc.errors()],
             }
-        if name == "purchase_service":
+        if name == "discover_vendors":
+            self.scout.start(parsed.query)
+            data = {"discovery": self.scout.state.copy()}
+        elif name == "get_vendor_search":
+            data = {"discovery": await self.scout.result()}
+        elif name == "purchase_service":
             return await self.gate.purchase(parsed.service_id, parsed.text)
-        if name == "list_services":
+        elif name == "list_services":
             data = {
                 "services": [s.model_dump() for s in self.gate.services.values()],
                 "simulation": True,

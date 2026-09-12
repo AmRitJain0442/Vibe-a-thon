@@ -160,3 +160,96 @@ def test_browser_cannot_replace_a_scripted_demo_plan(dashboard):
     assert (
         client.post("/api/runs", json={"mode": "runway-demo", "task_list": []}).status_code == 400
     )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [[], {}, {"query": " "}, {"query": "x" * 401}, {"query": "weather", "network": "mainnet"}],
+)
+def test_discovery_validates_query_before_creating_session(dashboard, payload):
+    app, client = dashboard
+    assert client.post("/api/discovery", json=payload).status_code == 400
+    assert app.ledger.sessions() == []
+
+
+def test_discovery_retains_same_origin_boundary(dashboard):
+    app, client = dashboard
+    assert (
+        client.post(
+            "/api/discovery",
+            json={"query": "weather"},
+            headers={"Origin": "https://untrusted.example"},
+        ).status_code
+        == 403
+    )
+    assert app.ledger.sessions() == []
+
+
+def test_discovery_session_updates_and_survives_restart(dashboard, monkeypatch):
+    from google.genai import types
+
+    from governor.discovery import VendorScout
+
+    app, client = dashboard
+    app.settings = app.settings.model_copy(update={"backend": "vertex", "project": "test"})
+
+    class Model:
+        def __init__(self, settings):
+            pass
+
+        async def generate(self, *args):
+            return types.GenerateContentResponse(
+                candidates=[
+                    types.Candidate(
+                        content=types.Content(
+                            role="model",
+                            parts=[
+                                types.Part(
+                                    function_call=types.FunctionCall(
+                                        name="submit_search_plan", args={"queries": ["weather"]}
+                                    )
+                                )
+                            ],
+                        ),
+                        finish_reason=types.FinishReason.STOP,
+                    )
+                ]
+            )
+
+        async def close(self):
+            pass
+
+    class Registry:
+        async def search(self, query):
+            return {"resources": [], "partialResults": False}
+
+    class Scout(VendorScout):
+        def __init__(self, *args):
+            super().__init__(*args, client=Registry())
+
+    monkeypatch.setattr("governor.web.GeminiModel", Model)
+    monkeypatch.setattr("governor.web.VendorScout", Scout)
+    response = client.post("/api/discovery", json={"query": "weather"})
+    assert response.status_code == 202
+    session_id = response.json()["session_id"]
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        report = client.get(f"/api/sessions/{session_id}").json()
+        if report["status"] != "RUNNING":
+            break
+        time.sleep(0.02)
+    assert report["status"] == "COMPLETED"
+    assert report["discovery"]["status"] == "NO_MATCH"
+    assert report["budget"]["available"] == "10000"
+    assert report["attempts"] == []
+    assert Dashboard(app.settings).report(session_id)["discovery"] == report["discovery"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{"mode": "demo", "discover": True}, {"mode": "gemini", "task": "weather", "discover": "yes"}],
+)
+def test_discovery_flag_is_strict_and_demos_stay_offline(dashboard, payload):
+    app, client = dashboard
+    assert client.post("/api/runs", json=payload).status_code == 400
+    assert app.ledger.sessions() == []
