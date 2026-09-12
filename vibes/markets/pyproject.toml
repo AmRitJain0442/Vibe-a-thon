@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "governor-agent"
+version = "0.1.0"
+description = "A Gemini agent with deterministic spending controls"
+requires-python = ">=3.12"
+dependencies = [
+  "google-genai>=2.23.0,<3",
+  "pydantic>=2.13.5,<3",
+  "python-dotenv>=1.2.3,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.1,<10", "pytest-asyncio>=1.4,<2", "ruff>=0.16,<0.17"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
