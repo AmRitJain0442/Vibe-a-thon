@@ -170,6 +170,12 @@ and retry your prompt.
 
 ## Verification
 
+Settings were exercised with real Codex in session `codex-8f68f3c4ca494b90`:
+0.006 USDC total, 0.002 USDC per call, six Governor calls maximum, a 30-second
+per-tool timeout, and medium reasoning effort. Codex read back the selected caps;
+the completed app report retained those limits, with zero settled or held USDC.
+
+
 The interactive terminal was exercised with real Codex CLI 0.154.0: native
 `get_budget` and `list_services` calls, streamed answers, and a second prompt
 that recalled the first prompt's word on the same Codex thread. `/finish` saved
