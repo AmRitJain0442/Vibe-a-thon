@@ -2,7 +2,7 @@
 
 A Gemini agent that can discover approved services, request purchases through a
 deterministic budget gate, and fall back to a local excerpt. Based on the
-[Governor PRD](../../PRD.md). Work lives on `vibes/markets` in
+[Governor PRD](PRD.md). Work lives on `vibes/markets` in
 `AmRitJain0442/Vibe-a-thon`.
 
 **Implemented:** Gemini tool calling, strict tool inputs, run limits, SQLite
