@@ -55,7 +55,9 @@ def payment_message(
     return MessageV0.try_compile(
         payer=Pubkey.from_string(fee_payer),
         instructions=[
-            set_compute_unit_limit(20000),
+            # The 73-byte invoice memo exceeds the SDK's 20k default with TransferChecked.
+            # Keep a fixed, bounded allowance for the complete transfer + memo execution.
+            set_compute_unit_limit(40000),
             set_compute_unit_price(1),
             transfer,
             Instruction(MEMO, memo.encode(), []),
