@@ -18,12 +18,16 @@ dependencies = [
 [project.scripts]
 governor = "governor.cli:main"
 governor-wallet = "governor.solana_wallet:main"
+governor-web = "governor.web:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=9.1,<10", "pytest-asyncio>=1.4,<2", "ruff>=0.16,<0.17", "httpx>=0.28,<1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+governor = ["static/*", "static/assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

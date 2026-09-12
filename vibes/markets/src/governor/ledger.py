@@ -107,6 +107,22 @@ class Ledger:
         with self._transaction() as db:
             return self._session(db, session_id)["task"]
 
+    def sessions(self) -> list[dict]:
+        """List local sessions without applying a new policy to historical budgets."""
+        with self._transaction() as db:
+            return [
+                {
+                    "session_id": row["id"],
+                    "task": row["task"],
+                    "compatible": row["policy_hash"] == self.policy_hash,
+                    "created_at": row["created_at"],
+                }
+                for row in db.execute(
+                    "SELECT s.*, (SELECT MIN(time) FROM events WHERE session_id=s.id) "
+                    "AS created_at FROM sessions s ORDER BY s.rowid DESC"
+                )
+            ]
+
     def _snapshot(self, db, session_id):
         self._session(db, session_id)
         rows = db.execute(
