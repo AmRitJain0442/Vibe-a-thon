@@ -33,6 +33,13 @@ The server loads only the `.env` in its working directory.
 - **Services:** live Bazaar search, vendor comparisons and recommendations, plus the
   four simulated services and task-launcher shortcuts. Discovered sellers remain
   advisory listings with purchases disconnected. See [Bazaar discovery](bazaar.md).
+- **Local vendor:** start `governor-vendor`, then use Services → **Pay 0.002 USDC**
+  for one actual Devnet purchase, or **Use Gemini + Devnet payment** for a live
+  Gemini task. The separate seller console at <http://127.0.0.1:8788> shows its
+  wallet, confirmed order revenue and receipts. See [vendor setup](../src/governor/vendor/README.md).
+- **Devnet receipts:** session details link confirmed transactions to the explorer.
+  Recheck an uncertain payment using the existing signed transaction's evidence;
+  this never signs or sends a second payment.
 - **Vendor scout:** optional parallel Gemini child context with live search branches,
   task-fit/price/usage ranking, explicit no-match and error states, token usage and a
   discovery activity filter. Enabled by default in the Gemini launcher.
@@ -60,10 +67,11 @@ Local users/processes remain trusted. Do not expose it as a hosted app without a
 appropriate server and authentication layer. Python documents `http.server` as
 [unsuitable for production](https://docs.python.org/3/library/http.server.html).
 
-Google credentials stay on the Python side. The wallet keypair is read locally to
-derive its public address; the browser receives no private key material. There is
-no wallet signing or transfer endpoint. All agent payments are **simulated**;
-Gemini inference is live and its costs are separate from the USDC allowance.
+Google credentials, wallet keys and signed payment payloads stay on the Python
+side. Mock runs simulate payments. Explicit `vendor-demo` and `gemini-devnet` runs
+transfer real Devnet USDC to the allowlisted local merchant through the budget
+gate. Session payment mode is immutable. There is no arbitrary transfer endpoint.
+Gemini inference costs remain separate from the USDC allowance.
 
 ## Verification
 
@@ -83,7 +91,8 @@ returned the 10000 atomic USDC budget through the UI, and the wallet view verifi
 failure boundaries and parent handoff. Live Gemini/Bazaar runs showed planning,
 searching, ranking and recommendation in Chrome at desktop and mobile sizes with
 no page overflow or JavaScript errors; the USDC budget stayed untouched.
-The complete suite passes 147 tests; Ruff lint and formatting checks pass.
+Payment tests additionally cover x402 challenge/signature/receipt handling,
+idempotency, uncertain holds, reconciliation, and the merchant HTTP boundary.
 
 See [artwork.md](artwork.md) for the exact built-in imagegen prompts and font
 license locations. The transparent PNGs are packaged at

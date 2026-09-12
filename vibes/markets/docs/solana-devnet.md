@@ -105,16 +105,16 @@ includes a Solana Explorer link with `cluster=devnet`.
 determine whether the wallet is funded. The public wallet address may be shared
 for faucet funding. Private key bytes are never part of this output.
 
-## What remains for real agent payments
+## Real agent payments
 
-The agent still uses `MockPaymentAdapter`. Wallet setup does not enable real
-purchases or expose the wallet to Gemini. The Python x402 buyer docs identify
-`x402[svm]` and `x402[httpx]` as the relevant extras.
-[Buyer quickstart](https://docs.x402.org/getting-started/quickstart-for-buyers).
+Wallet setup alone does not change the default mock mode. Start `governor-vendor`
+and choose the explicit Devnet purchase mode on the dashboard's Services page.
+The [local vendor guide](../src/governor/vendor/README.md) covers setup, the separate
+seller page, CLI configuration, and receipt recovery.
 
-The next adapter must load this keypair locally, register only the exact Devnet
-network, validate the mint/payee/amount/fee payer, and pass through Governor's
-reservation gate before signing. Solana uses a partially signed transaction;
-EIP-3009 authorization logic from the original EVM design does not apply. Keep
-ambiguous holds until transaction/blockhash reconciliation establishes a safe
-terminal state.
+`DevnetPaymentAdapter` signs only exact USDC transfers to the pinned local vendor,
+after Governor reserves the payment within both caps. The facilitator sponsors
+fees; both sides independently verify confirmed transaction evidence. Private
+keys and signed payloads are never exposed to Gemini or the browser. Ambiguous
+signed holds stay reserved until confirmed settlement; automatic failed-payment
+hold release is not implemented. External Bazaar purchases remain disconnected.

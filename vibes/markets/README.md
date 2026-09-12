@@ -8,10 +8,11 @@ deterministic budget gate, and fall back to a local excerpt. Based on the
 **Implemented:** Gemini tool calling, strict tool inputs, run limits, SQLite
 reservations, restart-safe purchase identities, offline scenarios, audit exports,
 Budget Runway, and live Bazaar discovery with a parallel Gemini vendor scout.
-**Payment adapter:** simulated. The separate operator wallet CLI can create a
-Solana Devnet wallet, request SOL, and read actual SOL/USDC balances. Agent purchases
-do not yet use that wallet, an x402 HTTP handshake, or blockchain settlement.
-`run` uses real Gemini inference; `demo` uses a scripted model. Both use simulated payments.
+**Payment adapters:** sandbox simulation and real x402 Solana Devnet payments to
+the separately allowlisted local demo vendor. Sandbox remains the default.
+The vendor adapter signs with the existing buyer wallet, verifies chain receipts,
+and records actual USDC spend. Arbitrary Bazaar sellers are not yet purchasable.
+`run` uses real Gemini inference; the original `demo` stays fully offline.
 
 For the active Solana Devnet configuration, see [wallet and faucet setup](docs/solana-devnet.md).
 
@@ -23,6 +24,14 @@ The pixel-style control room includes light/dark orange themes, Gemini task laun
 an offline demo, session budgets and activity, JSON/CSV downloads, and live devnet
 wallet balances. No frontend build step is required.
 See [dashboard usage and access boundary](docs/dashboard.md).
+
+## Demo vendor with real Devnet payments
+
+Start `.venv/bin/governor-vendor` in a second terminal, then open
+<http://127.0.0.1:8788>. The merchant has a separate wallet and an incoming-order
+console. In Governor's **Services** page, use the one-call **Pay 0.002 USDC** demo
+or launch **Gemini + Devnet payment**. Initialize the vendor's USDC token account
+before the first purchase. See [vendor setup, protocol and recovery](src/governor/vendor/README.md).
 
 ## Bazaar vendor scout
 
@@ -142,7 +151,7 @@ The CLI loads `.env` only from the working directory. Shell variables take prece
 | `GOVERNOR_RUN_TIMEOUT_SECONDS` | `120` | Deadline for the whole invocation |
 | `GOVERNOR_MODEL_TIMEOUT_SECONDS` | `30` | Deadline for one model request |
 | `GOVERNOR_DATA_DIR` | `.governor` | Local ledger and report directory |
-| `GOVERNOR_PAYMENT_MODE` | `mock` | Only supported payment mode |
+| `GOVERNOR_PAYMENT_MODE` | `mock` | CLI adapter: `mock` or local-vendor `solana-devnet` |
 
 One USDC is 1,000,000 atomic units. Monetary inputs must be canonical decimal
 integer strings: `"2000"`, never `0.002`, scientific notation, or a float.
@@ -194,7 +203,8 @@ CLI → Gemini model → bounded agent loop → validated tool registry
 The ledger and audit contain task text and service outputs. They stay under the
 ignored `.governor/` directory by default. Reports are written atomically to
 `.governor/reports/<session>.json`; CSV exports contain settled expenses only.
-Receipts start with `mock:` and have no explorer links.
+Mock receipts start with `mock:`. Devnet receipts contain actual transaction
+signatures and link to Solana Explorer; signed payloads are stored privately.
 
 ## Checks
 
@@ -212,11 +222,10 @@ uses an HTTP mock; it does not require an API key or call Google.
 
 ## Next integration steps
 
-1. Implement the real x402 payment adapter against a pinned SDK. Validate the
-   token contract, recipient, network, mechanism, and challenge before reserving
-   and signing. Current `Quote` is an internal mock contract, not a wire schema.
-2. Add receipt/nonce reconciliation before releasing any potentially signed hold.
-   This scaffold intentionally has no automatic timeout release or reset command.
+1. Extend the now-working local vendor adapter to explicitly approved external
+   Bazaar sellers, including their input schemas and fresh quote validation.
+2. Broaden receipt reconciliation beyond the bounded local-vendor recovery path.
+   There is no automatic timeout release or reset command.
 3. Isolate the signing key and budget writes in a separate service before allowing
    an agent to execute arbitrary code. A local Python wrapper does not protect
    against a process that can modify its own code, database, or credentials.

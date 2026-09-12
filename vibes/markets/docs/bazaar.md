@@ -90,11 +90,12 @@ skills, submit task data to sellers, verify fresh 402 challenges, or purchase ca
 For this version, resource URLs must be public HTTPS endpoints without credentials,
 query strings, fragments or nonstandard ports; other listings are skipped.
 
-The existing four sandbox services remain the only purchasable IDs. A discovered
-ID passed to `purchase_service` is refused by the existing gate. The remaining
-integration is a real x402 adapter with live challenge validation, signing,
-facilitator settlement and receipt reconciliation. Discovery never expands that
-allowlist, changes a cap, or reserves any USDC.
+The four sandbox services are purchasable in mock sessions. Real Devnet sessions
+allow only `vendor-summary`, the explicitly configured [local demo vendor](../src/governor/vendor/README.md).
+That adapter validates live challenges, signs, settles through the facilitator,
+and verifies on-chain receipts. A discovered Bazaar ID passed to `purchase_service`
+is still refused; external seller onboarding remains unimplemented. Discovery
+never expands the allowlist, changes a cap, or reserves any USDC.
 
 ## HTTP contract and checks
 
