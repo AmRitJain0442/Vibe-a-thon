@@ -231,7 +231,7 @@ function sessionsView() {
 }
 function attempts() {
   if (!report.attempts.length) return '';
-  return `<section class="panel attempts"><div class="panel-head"><h2>Payment attempts</h2><span class="status-badge">SIMULATED</span></div><table><thead><tr><th>SERVICE</th><th>USDC</th><th>STATUS</th><th>RECEIPT / REASON</th></tr></thead><tbody>${report.attempts.map(a=>`<tr><td>${esc(a.service)}</td><td>${money(a.amount)}</td><td>${badge(a.status)}</td><td>${esc(a.result.code || a.result.receipt || 'Settlement not confirmed')}</td></tr>`).join('')}</tbody></table></section>`;
+  return `<section class="panel attempts"><div class="panel-head"><h2>Payment attempts</h2><span class="status-badge">${livePayment() ? "REAL DEVNET" : "SIMULATED"}</span></div><table><thead><tr><th>SERVICE</th><th>USDC</th><th>STATUS</th><th>RECEIPT / REASON</th></tr></thead><tbody>${report.attempts.map(a=>`<tr><td>${esc(a.service)}</td><td>${money(a.amount)}</td><td>${badge(a.status)}</td><td>${esc(a.result.code || a.result.receipt || 'Settlement not confirmed')}</td></tr>`).join('')}</tbody></table></section>`;
 }
 function vendorCard() {
   const v=state.vendor;
