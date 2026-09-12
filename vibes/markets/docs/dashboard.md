@@ -1,0 +1,77 @@
+# Governor control room
+
+A local, responsive dashboard for the existing Governor runtime. Vanilla HTML,
+CSS and JavaScript are served by the Python package; no Node install or frontend
+build step is needed. Orange accents, pixel type and two transparent clay assets
+are shared by the light and dark themes. Fonts are self-hosted.
+
+## Start
+
+From `vibes/markets`, with the existing virtual environment:
+
+```bash
+.venv/bin/pip install -e . --no-deps
+.venv/bin/governor-web
+```
+
+Open <http://127.0.0.1:8787>. Use `--port 8790` for another port, or
+`--data-dir /path/to/local/state` for a separate ledger and wallet directory.
+The server loads only the `.env` in its working directory.
+
+## Working interactions
+
+- **Overview:** selected session's available budget, settled spend, persistent
+  holds, refusals, agent status and an activity stream with payment/refusal filters.
+- **Task launcher:** enter a task or use a preset, then run the configured Gemini
+  model. The existing tool allowlist and operator budget policy remain in force.
+- **Sandbox demo:** runs the real agent loop and payment gate with a scripted
+  model. No credentials or network calls are needed. With default caps, it ends
+  with 8000 atomic USDC settled, 2000 held, and three refused payments.
+- **Sessions:** search local tasks, inspect their ledger and final response,
+  download audit JSON and settled-expense CSV. Older CLI sessions have their
+  existing audit events; final answer text is available for dashboard-created runs.
+- **Services:** four existing simulated services and task-launcher shortcuts.
+- **Wallet:** read verified Solana Devnet balances, copy the public address, and
+  open the explorer. A missing wallet or failed RPC does not become a zero balance.
+- **Policy:** inspect the configured caps, turn/tool limits and run deadline.
+- **Themes:** light/orange and black/orange, remembered locally across reloads.
+
+Only one dashboard run executes at a time. The page polls the ledger while open;
+closing the page does not cancel a run. Stopping the server can interrupt the
+worker, but already persisted payment holds remain reserved. There is no browser
+resume action yet; the existing CLI remains available for recovery.
+
+## Local access boundary
+
+This is a development interface, bound to `127.0.0.1`. It validates Host and Origin,
+rejects cross-site requests, requires same-origin JSON for launching tasks, serves
+only packaged static assets, and applies a restrictive Content Security Policy.
+It does not add SAML, user accounts, cookies, JWTs, or multi-user authorization.
+Local users/processes remain trusted. Do not expose it as a hosted app without an
+appropriate server and authentication layer. Python documents `http.server` as
+[unsuitable for production](https://docs.python.org/3/library/http.server.html).
+
+Google credentials stay on the Python side. The wallet keypair is read locally to
+derive its public address; the browser receives no private key material. There is
+no wallet signing or transfer endpoint. All agent payments are **simulated**;
+Gemini inference is live and its costs are separate from the USDC allowance.
+
+## Verification
+
+```bash
+.venv/bin/ruff check src tests
+.venv/bin/pytest -q
+```
+
+`test_web.py` covers the HTTP browser boundary, invalid inputs, single-run limit,
+actual sandbox budget outcomes, exports, restart persistence, and absent wallets.
+The UI has also been exercised in Chrome at desktop and mobile sizes: navigation,
+theme persistence, task launch, refusal filters, report download, session search,
+and live wallet reads. All five views were checked at 360, 390, 768, 1024 and 1440px
+without horizontal page overflow or browser console errors. A live Gemini task
+returned the 10000 atomic USDC budget through the UI, and the wallet view verified
+20 devnet USDC. The full suite passes 65 tests.
+
+See [artwork.md](artwork.md) for the exact built-in imagegen prompts and font
+license locations. The transparent PNGs are packaged at
+`src/governor/static/assets/guardian.png` and `src/governor/static/assets/vault.png`.

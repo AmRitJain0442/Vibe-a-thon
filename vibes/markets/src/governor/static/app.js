@@ -82,7 +82,7 @@ function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   storage.set('governor.theme', theme);
   $$('[data-theme-choice]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.themeChoice === theme)));
-  $('meta[name="theme-color"]').content = theme === 'dark' ? '#141613' : '#f5f4ef';
+  $('meta[name="theme-color"]').content = theme === 'dark' ? '#141414' : '#f5f4ef';
 }
 function sessionPicker() {
   const sessions = state.sessions.filter(s => s.compatible);

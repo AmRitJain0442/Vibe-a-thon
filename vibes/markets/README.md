@@ -14,6 +14,15 @@ do not yet use that wallet, an x402 HTTP handshake, or blockchain settlement.
 
 For the active Solana Devnet configuration, see [wallet and faucet setup](docs/solana-devnet.md).
 
+## Local dashboard
+
+From `vibes/markets`, run `.venv/bin/pip install -e . --no-deps`, then
+`.venv/bin/governor-web` and open <http://127.0.0.1:8787>.
+The pixel-style control room includes light/dark orange themes, Gemini task launch,
+an offline demo, session budgets and activity, JSON/CSV downloads, and live devnet
+wallet balances. No frontend build step is required.
+See [dashboard usage and access boundary](docs/dashboard.md).
+
 ## Setup
 
 Python 3.12 or newer; tested with Python 3.14. From the repository root:
